@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.7';
+const VERSION = '1.1.8';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -425,6 +425,7 @@ function engineFor(kind) {
 function renderMic() {
   const b = $('#btnMic');
   b.hidden = mode !== 'read';
+  renderSpeak();
   b.classList.toggle('on', listening);
   b.classList.toggle('loading', micBusy);
   b.setAttribute('aria-pressed', listening ? 'true' : 'false');
@@ -698,6 +699,7 @@ function stopTTS() {
   if (!tts && !ttsBusy()) return;
   speakers.android.stop(); speakers.piper.stop();
   closeLoad();
+  setTimeout(renderSpeak, 0);
   tts = null;
   updateClasses(); wantAwake();
 }
@@ -706,11 +708,13 @@ function speakFrom(ti) {
   if (vc.kind === 'android' && !Speaker.supported()) { toast('This browser can’t read text aloud.'); return; }
   const tok = model.tokens[ti];
   if (!tok || tok.sent < 0) return;
-  let sents = settings.ttsUnit === 'para' ? model.sentences.filter((s) => s.pid === tok.pid) : [model.sentences[tok.sent]];
+  const S = model.sentences;
+  let sents = settings.ttsUnit === 'para' ? S.filter((s) => s.pid === tok.pid && s.t1 > ti)
+    : settings.ttsUnit === 'cont' ? S.slice(tok.sent) : [S[tok.sent]];
   sents = sents.filter(Boolean);
   if (!sents.length) return;
-  if (tts && tts.t0 === sents[0].t0 && ttsBusy()) { stopTTS(); return; }
-  const chunks = sents.map((s) => {
+  if (tts && ti >= tts.t0 && ti < tts.t1 && ttsBusy()) { pauseTTS(); return; } // tap the sentence being read to pause
+  const items = sents.map((s) => {
     let text = '';
     const starts = [], words = [], syl = [];
     for (let t = s.t0; t < s.t1; t++) {
@@ -720,18 +724,46 @@ function speakFrom(ti) {
       starts.push(text.length); text += tk.text; words.push(t);
       let n = 0; for (let u = tk.u0; u < tk.u1; u++) n += model.units[u].syl; syl.push(n);
     }
-    return { text, starts, words, syl };
-  }).filter((c) => c.words.length);
+    return { chunk: { text, starts, words, syl }, range: [s.t0, s.t1] };
+  }).filter((x) => x.chunk.words.length);
+  if (!items.length) return;
+  stopTTS();
   if (sound) setSound(false);
-  tts = { t0: sents[0].t0, t1: sents[sents.length - 1].t1, cur: -1, tracker: new RateTracker() };
+  const ranges = items.map((x) => x.range);
+  tts = { t0: ranges[0][0], t1: ranges[0][1], ranges, cur: -1, tracker: new RateTracker() };
   follower.jumpTo(model.tokens[tts.t0].u0, false);
   if (hasVideo()) { setFollow(true); }
-  speakers[vc.kind].speak(chunks, { ...vc, rate: settings.ttsRate }, ttsCallbacks({
-    word: (t) => { if (!tts) return; tts.cur = t; tts.tracker.push(model.tokens[t].u0); markDirtyTokens(tts.t0, tts.t1); },
-    end: () => { if (tts) markDirtyTokens(tts.t0, tts.t1); tts = null; wantAwake(); },
+  speakers[vc.kind].speak(items.map((x) => x.chunk), { ...vc, rate: settings.ttsRate }, ttsCallbacks({
+    word: (t, k) => {
+      if (!tts) return;
+      const r = tts.ranges[k];
+      if (r && r[0] !== tts.t0) { markDirtyTokens(tts.t0, tts.t1); tts.t0 = r[0]; tts.t1 = r[1]; }
+      tts.cur = t; tts.tracker.push(model.tokens[t].u0); markDirtyTokens(tts.t0, tts.t1);
+    },
+    end: () => { if (tts) markDirtyTokens(tts.t0, tts.t1); tts = null; wantAwake(); renderSpeak(); },
   }));
-  updateClasses(); wantAwake();
+  updateClasses(); wantAwake(); renderSpeak();
 }
+// Pause keeps your place: the reading spot moves to the sentence being read, and Read aloud picks up there.
+function pauseTTS() {
+  const t = tts ? (tts.cur >= 0 ? tts.cur : tts.t0) : -1;
+  stopTTS();
+  if (t >= 0) { const s = model.sentences[model.tokens[t].sent]; if (s) follower.jumpTo(s.u0, false); }
+  renderSpeak();
+}
+function renderSpeak() {
+  const b = $('#btnSpeak');
+  b.hidden = mode !== 'listen';
+  const on = !!tts && ttsBusy();
+  b.classList.toggle('on', on);
+  $('#speakLbl').textContent = on ? 'Pause' : 'Read aloud';
+}
+$('#btnSpeak').onclick = () => {
+  if (!model || !model.N) return;
+  if (tts && ttsBusy()) { pauseTTS(); return; }
+  const u = Math.min(follower.pos, model.N - 1);
+  speakFrom(model.units[u].ti);
+};
 
 // ---------- edit mode ----------
 function openEditor(pid) {
@@ -972,6 +1004,7 @@ document.addEventListener('keydown', (e) => {
   if (!model) return;
   const sentAt = () => { const u = Math.min(follower.pos, model.N - 1); return u >= 0 ? model.tokens[model.units[u].ti].sent : -1; };
   if (e.key === ' ' && mode === 'read') { e.preventDefault(); $('#btnMic').click(); }
+  else if (e.key === ' ' && mode === 'listen') { e.preventDefault(); $('#btnSpeak').click(); }
   else if (e.key === 'ArrowDown' || e.key === 'PageDown') {
     e.preventDefault();
     const s = model.sentences[sentAt() + 1];

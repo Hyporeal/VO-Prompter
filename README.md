@@ -7,7 +7,7 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 ## Modes
 
 - **Read**: tap **Start** and read. Words you've read are highlighted, and a guide shows what's next. The line you're on stays near the top with the previous line above it. Tap any word to move there; the video jumps with you.
-- **Listen**: tap a sentence (or paragraph, in Settings) to hear it read aloud. Tap it again to stop. The video follows the voice.
+- **Listen**: tap a sentence to hear it read aloud (Settings: the sentence, the paragraph, or keep going continuously). **Read aloud / Pause** at the top starts or pauses from your spot; tapping the sentence being read also pauses. Speed goes up to ×2.5. The video follows the voice.
 - **Edit**: tap a paragraph to change it. Edited paragraphs get a small dot. **Files → Export** saves the edited script as .docx or .txt. The original file isn't changed.
 
 ## Video

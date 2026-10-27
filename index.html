@@ -76,6 +76,8 @@ button { cursor: pointer; }
 }
 .mic .dot { width: 12px; height: 12px; border-radius: 50%; background: currentColor; opacity: .5; transition: transform 80ms linear; }
 .mic.on { background: var(--accent); color: var(--accent-ink); }
+.mic.speak { border-color: var(--tts-line, #78aaff); color: var(--tts-line, #78aaff); }
+.mic.speak.on { background: var(--tts-line, #78aaff); color: #0b1220; }
 .mic.on .dot { opacity: 1; }
 .mic.loading { border-style: dashed; }
 .icon-btn { width: 42px; height: 42px; padding: 0; display: inline-grid; place-items: center; }
@@ -201,6 +203,7 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
   <span class="title" id="title">No script open</span>
   <span class="chip off" id="offScript" hidden>Off script</span>
   <button class="mic" id="btnMic" aria-pressed="false"><span class="dot" id="micDot"></span><span id="micLbl">Start</span></button>
+  <button class="mic speak" id="btnSpeak" hidden><span id="speakLbl">Read aloud</span></button>
   <button class="btn" id="btnFiles">Files</button>
   <button class="btn icon-btn" id="btnSettings" aria-label="Settings" title="Settings">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
@@ -295,9 +298,10 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     </fieldset>
     <fieldset>
       <legend>Listen mode</legend>
-      <div class="row"><label for="selUnit">Tap reads</label><select id="selUnit"><option value="sentence">The sentence</option><option value="para">The paragraph</option></select></div>
+      <div class="row"><label for="selUnit">Tap reads</label><select id="selUnit"><option value="sentence">The sentence</option><option value="para">The paragraph</option><option value="cont">Keep going (continuous)</option></select>
+        <small>Read aloud / Pause is at the top. Tapping the sentence being read also pauses.</small></div>
       <div class="row"><label for="selVoice">Voice</label><select id="selVoice"></select><small id="voiceNote"></small></div>
-      <div class="row"><label for="sRate">Speed</label><output id="oRate"></output><input type="range" id="sRate" min="0.6" max="1.6" step="0.05"></div>
+      <div class="row"><label for="sRate">Speed</label><output id="oRate"></output><input type="range" id="sRate" min="0.6" max="2.5" step="0.05"></div>
       <div class="btns"><button class="btn" id="btnTestVoice">Test voice</button></div>
     </fieldset>
     <fieldset>

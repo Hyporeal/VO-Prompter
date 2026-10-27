@@ -5,13 +5,13 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.2';
+const VERSION = '1.1.3';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
   textSize: 28, said: 'hl', guide: 'under', span: 'word', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, markStrength: 'faint', offNotice: 'off', textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, textFrac: null, sideFrac: null, lastProject: null,
 };
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
@@ -165,7 +165,7 @@ function renderDoc() {
 // ---------- painting ----------
 // Class changes are batched into one paint per frame (from the tick loop), and only words that could have
 // changed are touched. updateClasses() asks for a full repaint.
-let dirtyLo = Infinity, dirtyHi = -1, dirtyAll = false, scrollPending = false;
+let dirtyLo = Infinity, dirtyHi = -1, dirtyAll = false;
 let guideA = -1, guideB = -1, lastFollowPos = 0;
 let blockByPid = new Map();
 const LAG = { device: 0.4, google: 0.7 }; // typical seconds between saying a word and the recognizer reporting it
@@ -280,17 +280,16 @@ function paint() {
       }
     }
   }
-  if (scrollPending) { scrollPending = false; scrollToCurrent(false); }
 }
 
 // ---------- scrolling ----------
 let userScrollUntil = 0, anim = null;
-function smoothScrollTo(top) {
+function smoothScrollTo(top, dur = 280) {
   top = Math.max(0, Math.min(top, scriptEl.scrollHeight - scriptEl.clientHeight));
   const from = scriptEl.scrollTop, d = top - from;
   if (Math.abs(d) < 1) return;
   if (Math.abs(d) > scriptEl.clientHeight * 2) { scriptEl.scrollTop = top; return; }
-  const t0 = performance.now(), dur = 280;
+  const t0 = performance.now();
   anim = { top };
   const step = (now) => {
     if (!anim || anim.top !== top) return;
@@ -331,8 +330,44 @@ function currentEl() {
 }
 const scrollToCurrent = (force) => keepInView(currentEl(), force);
 
+// While reading (or in Listen mode), the page follows a reading spot that has held for a moment, so a spot that
+// jumps ahead and back never moves the page. Styles: 'pause' waits for a break in your speech before moving
+// (unless the line runs out of room), 'step' moves right away, 'slow' drifts up gently and continuously.
+const stable = { pos: 0, cand: -1, t: 0 };
+let lastScrollT = 0, slowAcc = 0;
+function autoScroll() {
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - (lastScrollT || now)) / 1000); lastScrollT = now;
+  if (!model || !model.N) return;
+  let el, lastWord;
+  if (tts && tts.cur >= 0) { el = tokEls[tts.cur]; lastWord = 0; }
+  else if (listening) {
+    if (follower.pos !== stable.cand) { stable.cand = follower.pos; stable.t = now; }
+    else if (now - stable.t > 350) stable.pos = stable.cand;
+    el = tokEls[model.units[Math.min(stable.pos, model.N - 1)].ti];
+    const h = follower.hist; lastWord = h.length ? h[h.length - 1].t * 1000 : 0;
+  } else return;
+  if (!el) return;
+  const sr = scriptEl.getBoundingClientRect(), r = el.getBoundingClientRect();
+  const lineH = settings.textSize * 1.5, top = sr.top + 10, want = top + lineH * settings.linesAbove;
+  const below = r.top - want, roomOut = r.bottom > sr.bottom - lineH * 0.6, aboveTop = r.top < top - 2;
+  if (now < userScrollUntil) { if (aboveTop || r.top > sr.bottom) $('#backPill').hidden = false; return; }
+  $('#backPill').hidden = true;
+  if (aboveTop) { if (!anim) smoothScrollTo(scriptEl.scrollTop + (r.top - want), 450); return; }
+  if (settings.scrollStyle === 'slow') {
+    if (below <= 1 || anim) { slowAcc = 0; return; }
+    const speed = Math.min(lineH * 1.6, Math.max(lineH * 0.35, below * 0.7)) * (roomOut ? 3 : 1);
+    slowAcc += speed * dt;
+    if (slowAcc >= 1) { const step = Math.floor(slowAcc); slowAcc -= step; scriptEl.scrollTop += Math.min(step, below); }
+    return;
+  }
+  if (anim || (below < lineH * (settings.scrollEvery - 0.5) && !roomOut)) return;
+  if (settings.scrollStyle === 'pause' && !roomOut && now - lastWord < 450) return;
+  smoothScrollTo(scriptEl.scrollTop + below, settings.scrollStyle === 'pause' ? 450 : 300);
+}
+
 // ---------- following ----------
-let saveTimer = null, jumpScrollTimer = null;
+let saveTimer = null;
 function onFollow(e) {
   if (!model) return;
   if (e && e.jump) dirtyAll = true;
@@ -343,11 +378,6 @@ function onFollow(e) {
     if (s0) markDirtyTokens(s0.t0, model.units[u].ti + 1);
   }
   lastFollowPos = follower.pos;
-  if (e && e.jump && listening) {
-    const at = follower.pos;
-    clearTimeout(jumpScrollTimer);
-    jumpScrollTimer = setTimeout(() => { if (Math.abs(follower.pos - at) < 40) scrollPending = true; }, 700);
-  } else scrollPending = true;
   if (e && e.jump && !listening) seekVideoToPos();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveProject, 1500);
@@ -527,6 +557,7 @@ function tick() {
   requestAnimationFrame(tick);
   paint();
   updateOffChip();
+  autoScroll();
   const now = performance.now() / 1000;
   const dt = Math.min(0.1, now - lastTick || 0.016);
   lastTick = now;
@@ -551,7 +582,8 @@ function tick() {
   if (Math.abs(r - video.playbackRate) > video.playbackRate * 0.04) video.playbackRate = r;
   if (video.paused) video.play().catch(() => {});
   const label = '×' + (r < 10 ? r.toFixed(1) : Math.round(r));
-  if (label !== lastRateShown) { $('#vRate').textContent = label; $('#vRate').hidden = false; lastRateShown = label; }
+  if (!settings.showRate) { if (lastRateShown) { $('#vRate').hidden = true; lastRateShown = ''; } }
+  else if (label !== lastRateShown) { $('#vRate').textContent = label; $('#vRate').hidden = false; lastRateShown = label; }
 }
 requestAnimationFrame(tick);
 
@@ -656,7 +688,7 @@ function speakFrom(ti) {
   follower.jumpTo(model.tokens[tts.t0].u0, false);
   if (hasVideo()) { setFollow(true); }
   speakers[vc.kind].speak(chunks, { ...vc, rate: settings.ttsRate }, ttsCallbacks({
-    word: (t) => { if (!tts) return; tts.cur = t; tts.tracker.push(model.tokens[t].u0); markDirtyTokens(tts.t0, tts.t1); keepInView(tokEls[t], false); },
+    word: (t) => { if (!tts) return; tts.cur = t; tts.tracker.push(model.tokens[t].u0); markDirtyTokens(tts.t0, tts.t1); },
     end: () => { if (tts) markDirtyTokens(tts.t0, tts.t1); tts = null; wantAwake(); },
   }));
   updateClasses(); wantAwake();
@@ -1013,6 +1045,7 @@ async function syncSettingsUI() {
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
   $('#selMarks').value = settings.marks; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
+  $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
   $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery); $('#selMarkStr').value = settings.markStrength;
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
   $('#engineNote').textContent = settings.engine === 'google'
@@ -1028,6 +1061,8 @@ $('#sText').oninput = (e) => { settings.textSize = +e.target.value; $('#oText').
 $('#sText').onchange = () => { saveSettings(); scrollToCurrent(true); };
 bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selTheme', 'theme');
 bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
+bindSel('#selScrollStyle', 'scrollStyle');
+$('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
   $(id).onchange = (e) => { settings[key] = +e.target.value; saveSettings(); scrollToCurrent(true); };
 }

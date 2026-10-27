@@ -101,14 +101,19 @@ button { cursor: pointer; }
 .para .stamp { font-family: var(--font-num); font-size: max(.5em, 11px); color: var(--muted); border: 1px solid var(--rule); border-radius: 6px; padding: 1px 6px; margin-right: 8px; vertical-align: .3em; cursor: pointer; }
 .para .stamp:hover { color: var(--fg); }
 .para .edited-dot { display: inline-block; width: .32em; height: .32em; border-radius: 50%; background: var(--accent); margin-left: .3em; vertical-align: .25em; }
-.w { border-radius: 4px; cursor: pointer; --txt: var(--fg); --guide: var(--accent); }
-.g { border-radius: 0; }
+.w { border-radius: 4px; cursor: pointer; --txt: var(--fg); --guide: var(--accent);
+  transition: color .35s ease, background-color .6s ease, box-shadow .3s ease, text-decoration-color .8s ease; }
+.g { border-radius: 0; transition: background-color .6s ease, box-shadow .3s ease; }
+/* calm: things that change while you read fade instead of flashing */
+.said-hl .w.said, .said-hl .g.said { transition: background-color 1.4s ease; }
+.said-dim .w.said, .said-sent .w.done { transition: color 1.6s ease; }
+@media (prefers-reduced-motion: reduce) { .w, .g { transition: none !important; } }
 /* what's been read */
 .said-hl .w.said, .said-hl .g.said { background-color: var(--said-bg); }
 .said-dim .w.said, .said-sent .w.done { color: var(--said-dim); }
 /* what to read next */
 .guide-fill .w.next { color: var(--guide); }
-.guide-under .w.next, .guide-under .g.next { background-image: linear-gradient(var(--guide), var(--guide)); background-position: left bottom; background-size: 100% 3px; background-repeat: no-repeat; }
+.guide-under .w.next, .guide-under .g.next { box-shadow: inset 0 -3px 0 var(--guide); }
 /* mistakes */
 .marks .w.skip { text-decoration: underline wavy color-mix(in srgb, var(--over) var(--mark-a, 40%), transparent); text-decoration-thickness: var(--mark-w, 1.5px); text-underline-offset: 6px; text-decoration-skip-ink: none; }
 .marks-all .w.maybe { text-decoration: underline dotted color-mix(in srgb, var(--close) var(--mark-a, 40%), transparent); text-decoration-thickness: calc(var(--mark-w, 1.5px) + 1px); text-underline-offset: 6px; }
@@ -269,9 +274,12 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
       <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="hl">Highlight word by word</option><option value="dim">Dim word by word</option><option value="sent">Dim each sentence when finished</option><option value="sent2">Dim a sentence after the next one</option><option value="off">No change</option></select></div>
       <div class="row"><label for="selGuide">Guide style</label><select id="selGuide"><option value="under">Underline</option><option value="fill">Fill the letters</option></select></div>
       <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="off">Off</option><option value="word">Next word</option><option value="phrase">Next phrase</option><option value="line">Whole line</option><option value="sentence">Whole sentence</option><option value="para">Whole paragraph</option></select></div>
-      <div class="row"><label for="selAbove">Lines kept above</label><select id="selAbove"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select></div>
+      <div class="row"><label for="selAbove">Lines kept above</label><select id="selAbove"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select></div>
       <div class="row"><label for="selEvery">Scroll every</label><select id="selEvery"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option><option value="5">5 lines</option></select>
-        <small>The page waits until you've read this many lines, then moves them up in one smooth step.</small></div>
+        <small>The page waits until you've read this many lines before it moves.</small></div>
+      <div class="row"><label for="selScrollStyle">Scroll style</label><select id="selScrollStyle"><option value="pause">At a pause in your reading</option><option value="step">Right away</option><option value="slow">Slow and steady</option></select>
+        <small>At a pause: moves only in a break between words, unless you run out of room. Slow and steady: drifts up gently instead of stepping.</small></div>
+      <div class="row"><label for="selRate">Video speed label</label><select id="selRate"><option value="off">Off</option><option value="on">On</option></select></div>
       <div class="row"><label for="selTheme">Theme</label><select id="selTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">Match the tablet</option></select></div>
     </fieldset>
     <fieldset>

@@ -13,7 +13,7 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 ## Video
 
 - **Files → Add video** stores the video on the tablet with the script.
-- **Follow** (on by default): the video tracks your reading position. Its speed eases up and down to stay with you, and it pauses when you pause. The small ×2.4 label shows how fast it's running.
+- **Follow** (on by default): the video tracks your reading position. Its speed eases up and down to stay with you, and it pauses when you pause. An optional ×2.4 label (Settings) shows how fast it's running.
 - **Play**, **−5s**, **+5s**: play or move the video yourself. This turns Follow off; tap **Follow** to go back to your reading spot.
 - **Sound on** turns the mic off so you can listen to the reference. **Sound off** turns the mic back on if it was on.
 - While Follow is off, a bar in the left margin shows which paragraph the video is at.
@@ -36,8 +36,11 @@ Without timestamps, the video is spread evenly across the whole script.
 
 - **Text size**: 10 to 56 px.
 - **Words you've read**: highlight or dim word by word, dim each sentence when finished, dim a sentence only after the next one is finished, or no change.
-- **Lines kept above**: how many lines stay visible above the reading line (default 3), so you can glance back.
+- **Lines kept above**: how many lines stay visible above the reading line (1 to 12, default 3), so you can glance back.
 - **Scroll every**: the page waits until you've read this many lines, then moves up in one smooth step (default 2). It only scrolls back up if the reading line leaves the top of the screen.
+- **Scroll style**: at a pause in your reading (default: moves only in a break between words, unless you run out of room), right away, or slow and steady (drifts up gently). The page follows a reading spot that has held for a moment, so a spot that flickers ahead never moves it.
+- **Video speed label**: off by default.
+- Read words, highlights and the guide fade in and out instead of switching instantly.
 - **Mark strength**: faint (default), medium or strong for skipped-word and misread marks.
 - **Guide style**: underline or fill the letters.
 - **Guide covers**: off, next word, next phrase, whole line (the line on screen), whole sentence, or whole paragraph. While you read, the guide runs slightly ahead of the last recognized word to make up for the recognizer's delay.

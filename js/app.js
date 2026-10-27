@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.17';
+const VERSION = '1.1.18';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {

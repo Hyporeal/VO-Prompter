@@ -130,13 +130,16 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 /* what to read next */
 .guide-fill .w.next, .guide-fill .g.next { color: var(--guide); }
 .guide-under .w.next, .guide-under .g.next { box-shadow: inset 0 -3px 0 var(--guide); }
-/* your highlights: a marker bar under the words and the spaces between them */
+/* your highlights: a see-through marker bar under the words and the spaces between them */
+#doc { --hl-y: rgba(255, 214, 10, .20); --hl-g: rgba(52, 211, 153, .18); --hl-b: rgba(96, 165, 250, .22); --hl-p: rgba(244, 114, 182, .20); --hl-o: rgba(251, 146, 60, .22); }
+:root[data-theme="light"] #doc { --hl-y: rgba(255, 214, 10, .32); --hl-g: rgba(52, 211, 153, .26); --hl-b: rgba(96, 165, 250, .26); --hl-p: rgba(244, 114, 182, .24); --hl-o: rgba(251, 146, 60, .28); }
+@media (prefers-color-scheme: light) { :root[data-theme="system"] #doc { --hl-y: rgba(255, 214, 10, .32); --hl-g: rgba(52, 211, 153, .26); --hl-b: rgba(96, 165, 250, .26); --hl-p: rgba(244, 114, 182, .24); --hl-o: rgba(251, 146, 60, .28); } }
 .w[class*=" hl-"], .g[class*=" hl-"] { border-radius: 0; }
-.w.hl-y, .g.hl-y { background-image: linear-gradient(rgba(255, 214, 10, .42), rgba(255, 214, 10, .42)); }
-.w.hl-g, .g.hl-g { background-image: linear-gradient(rgba(52, 211, 153, .40), rgba(52, 211, 153, .40)); }
-.w.hl-b, .g.hl-b { background-image: linear-gradient(rgba(96, 165, 250, .42), rgba(96, 165, 250, .42)); }
-.w.hl-p, .g.hl-p { background-image: linear-gradient(rgba(244, 114, 182, .42), rgba(244, 114, 182, .42)); }
-.w.hl-o, .g.hl-o { background-image: linear-gradient(rgba(251, 146, 60, .45), rgba(251, 146, 60, .45)); }
+.w.hl-y, .g.hl-y { background-image: linear-gradient(var(--hl-y), var(--hl-y)); }
+.w.hl-g, .g.hl-g { background-image: linear-gradient(var(--hl-g), var(--hl-g)); }
+.w.hl-b, .g.hl-b { background-image: linear-gradient(var(--hl-b), var(--hl-b)); }
+.w.hl-p, .g.hl-p { background-image: linear-gradient(var(--hl-p), var(--hl-p)); }
+.w.hl-o, .g.hl-o { background-image: linear-gradient(var(--hl-o), var(--hl-o)); }
 .w.hl-start { outline: 2px dashed var(--fg); outline-offset: 2px; }
 /* find */
 .w.found, .g.found { background-image: linear-gradient(rgba(150, 160, 255, .30), rgba(150, 160, 255, .30)); border-radius: 0; }

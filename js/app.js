@@ -4,7 +4,7 @@ import { OnDeviceEngine, GoogleEngine, modelIsCached } from './engines.js';
 import { Speaker, englishVoices } from './tts.js';
 import * as store from './store.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {

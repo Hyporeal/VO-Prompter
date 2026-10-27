@@ -34,7 +34,13 @@ async function modelBlobUrl(onProgress) {
     chunks.push(value); got += value.length;
     onProgress && onProgress({ phase: 'download', frac: Math.min(1, got / total) });
   }
-  const blob = new Blob(chunks, { type: 'application/gzip' });
+  let blob = new Blob(chunks, { type: 'application/gzip' });
+  // If the server unzipped it in transit, zip it again: the engine expects a .tar.gz
+  const head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+  if (!(head[0] === 0x1f && head[1] === 0x8b) && 'CompressionStream' in window) {
+    blob = await new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+    blob = new Blob([blob], { type: 'application/gzip' });
+  }
   if (cache) { try { await cache.put(MODEL_URL, new Response(blob)); } catch (e) { /* storage full: works this session */ } }
   return URL.createObjectURL(blob);
 }

@@ -99,6 +99,7 @@ export function align(units, a0, h, opts = {}) {
   ops.reverse();
   const marks = new Map();
   const hitAt = new Uint8Array(H + 1);
+  const hypUnit = new Int32Array(H + 1).fill(-1);
   let matches = 0, content = 0, trailing = 0, first = -1;
   let delRun = [], leading = true;
   const flushDel = () => {
@@ -119,6 +120,7 @@ export function align(units, a0, h, opts = {}) {
     leading = false;
     trailing = 0;
     const u = units[a0 + o.j - 1];
+    hypUnit[o.i] = u.u;
     if (first < 0) first = o.op === OP_S2 ? u.u - 1 : u.u;
     if (o.op === OP_DIAG) {
       const s = sim(h[o.i - 1], u.key);
@@ -134,7 +136,7 @@ export function align(units, a0, h, opts = {}) {
   // trailing deletions can't happen (free end), but leading-only paths can
   if (first < 0) delRun = [];
   flushDel();
-  return { end: a0 + bj, score: bv, marks, matches, content, trailing, first, tailHit, tailN: K };
+  return { end: a0 + bj, score: bv, marks, matches, content, trailing, first, tailHit, tailN: K, hypUnit };
 }
 
 export class Follower {
@@ -218,7 +220,19 @@ export class Follower {
         if (!relocated) this.off = true;
       } else this.off = false;
       // When lost, keep the position unless the reader clearly read up to a point and then went off script.
-      if (r && !relocated && (!lost || r.trailing >= 3)) { this.prov = r.marks; this.setPos(r.first >= 0 ? r.end : this.pos, false); }
+      if (r && !relocated && (!lost || r.trailing >= 3)) {
+        this.prov = r.marks; this.setPos(r.first >= 0 ? r.end : this.pos, false);
+        // Long utterance: lock in all but the last few words so each update stays quick.
+        if (!lost && h.length > 30) {
+          const cut = h.length - 14;
+          let cu = -1;
+          for (let i = cut; i >= 1 && cu < 0; i--) if (r.hypUnit[i] >= 0) cu = r.hypUnit[i];
+          if (cu >= this.anchor) {
+            for (const [u, st] of r.marks) if (u <= cu) this.status[u] = st;
+            this.anchor = cu + 1; this.segSkip += cut;
+          }
+        }
+      }
     }
     if (final) {
       this.commit();

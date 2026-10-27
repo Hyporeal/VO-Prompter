@@ -2,17 +2,20 @@ import { fileToParagraphs, textToParagraphs, buildModel, computeTimes, timeAt, u
 import { Follower, UNREAD } from './follow.js';
 import { OnDeviceEngine, GoogleEngine, modelIsCached } from './engines.js';
 import { Speaker, englishVoices } from './tts.js';
+import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
   textSize: 28, said: 'hl', guide: 'under', span: 'word', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', voiceURI: '', ttsRate: 1, videoH: 0, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, textFrac: null, sideFrac: null, lastProject: null,
 };
 const settings = store.loadSettings(DEFAULTS);
+if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
+if (settings.voiceURI !== undefined) { settings.ttsVoice = 'android:' + settings.voiceURI; delete settings.voiceURI; }
 const saveSettings = () => store.saveSettings(settings);
 
 // ---------- state ----------
@@ -31,7 +34,12 @@ let videoURL = null;
 let wakeLock = null;
 
 const follower = new Follower(onFollow);
-const speaker = new Speaker();
+const speakers = { android: new Speaker(), piper: new PiperSpeaker() };
+const ttsBusy = () => speakers.android.busy || speakers.piper.busy;
+function voiceChoice() {
+  const v = settings.ttsVoice || 'android:';
+  return v.startsWith('piper:') ? { kind: 'piper', voiceId: v.slice(6) } : { kind: 'android', voiceURI: v.slice(8) };
+}
 const video = $('#video');
 const scriptEl = $('#script');
 const docEl = $('#doc');
@@ -64,13 +72,12 @@ async function keepAwake(on) {
     else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
   } catch (e) { /* not allowed right now */ }
 }
-const wantAwake = () => keepAwake(listening || speaker.busy || (hasVideo() && !video.paused));
+const wantAwake = () => keepAwake(listening || ttsBusy() || (hasVideo() && !video.paused));
 
 // ---------- settings → page ----------
 function applySettings() {
   document.documentElement.dataset.theme = settings.theme;
   document.documentElement.style.setProperty('--script-size', settings.textSize + 'px');
-  if (settings.videoH) document.documentElement.style.setProperty('--video-h', settings.videoH + 'px');
   docEl.classList.toggle('said-hl', settings.said === 'hl');
   docEl.classList.toggle('said-dim', settings.said === 'dim');
   docEl.classList.toggle('guide-under', settings.guide === 'under');
@@ -146,54 +153,124 @@ function renderDoc() {
     frag.appendChild(add);
   }
   docEl.appendChild(frag);
+  guideA = guideB = -1; lastFollowPos = follower.pos; lineMemo.t = -1;
+  blockByPid = new Map(model.blocks.map((b) => [b.pid, b]));
   updateClasses();
+  paint();
 }
 
-function updateClasses() {
+// ---------- painting ----------
+// Class changes are batched into one paint per frame (from the tick loop), and only words that could have
+// changed are touched. updateClasses() asks for a full repaint.
+let dirtyLo = Infinity, dirtyHi = -1, dirtyAll = false, scrollPending = false;
+let guideA = -1, guideB = -1, lastFollowPos = 0;
+let blockByPid = new Map();
+const LAG = { device: 0.4, google: 0.7 }; // typical seconds between saying a word and the recognizer reporting it
+function updateClasses() { dirtyAll = true; }
+function markDirtyTokens(a, b) { if (a < dirtyLo) dirtyLo = a; if (b > dirtyHi) dirtyHi = b; }
+function markDirtyUnits(u0, u1) {
+  if (!model || !model.N) return;
+  const c = (u) => model.units[Math.max(0, Math.min(model.N - 1, u))].ti;
+  markDirtyTokens(c(u0) - 1, c(u1) + 1);
+}
+// While listening, the guide runs slightly ahead of the last recognized word by the recognizer's usual delay,
+// so it sits on the word you're saying rather than the one you just finished. It never crosses a sentence end.
+function guideUnit() {
+  const u = follower.pos;
+  if (!listening) return u;
+  const r = follower.rate();
+  const since = performance.now() / 1000 - r.lastT;
+  if (r.rate <= 0 || since > 0.9) return u;
+  const lead = Math.min(3, r.rate * (LAG[settings.engine] || 0.4));
+  let p = u + Math.floor(lead + 0.35);
+  const sent = model.sentences[model.tokens[model.units[u].ti].sent];
+  if (sent) p = Math.min(p, sent.u1 - 1);
+  return Math.max(u, Math.min(model.N - 1, p));
+}
+// The words on the same screen line as token t (depends on text size and wrapping). Cached per token and layout.
+let lineMemo = { t: -1, key: '', range: [-1, -1] };
+function lineRange(t) {
+  const key = settings.textSize + 'x' + scriptEl.clientWidth;
+  if (lineMemo.t === t && lineMemo.key === key) return lineMemo.range;
+  const { tokens } = model;
+  const el = tokEls[t];
+  if (!el) return [t, t];
+  const top = el.offsetTop, tol = settings.textSize * 0.5, pid = tokens[t].pid;
+  let a = t, b = t;
+  while (a > 0 && tokens[a - 1].pid === pid && tokEls[a - 1] && Math.abs(tokEls[a - 1].offsetTop - top) < tol) a--;
+  while (b < tokens.length - 1 && tokens[b + 1].pid === pid && tokEls[b + 1] && Math.abs(tokEls[b + 1].offsetTop - top) < tol) b++;
+  lineMemo = { t, key, range: [a, b] };
+  return lineMemo.range;
+}
+function guideRange() {
+  if (mode !== 'read' || settings.span === 'off' || !model || follower.pos >= model.N) return [-1, -1];
+  const { tokens, units } = model;
+  let t0 = units[guideUnit()].ti;
+  let t1 = t0;
+  if (settings.span === 'phrase') {
+    let n = 0;
+    while (t1 < tokens.length - 1 && n < 5 && !tokens[t1].endsPhrase && tokens[t1 + 1].pid === tokens[t0].pid) { t1++; n++; }
+  } else if (settings.span === 'line') {
+    [t0, t1] = lineRange(t0);
+  } else if (settings.span === 'sentence') {
+    const s = model.sentences[tokens[t0].sent];
+    if (s) { t0 = s.t0; t1 = s.t1 - 1; }
+  } else if (settings.span === 'para') {
+    const b = blockByPid.get(tokens[t0].pid);
+    if (b) { t0 = b.t0; t1 = b.t1 - 1; }
+  }
+  return [t0, t1];
+}
+function tokState(t) {
+  const { tokens, units } = model;
+  const tok = tokens[t];
+  let said = tok.spoken, skip = false, maybe = false;
+  for (let u = tok.u0; u < tok.u1; u++) {
+    const st = follower.eff(u);
+    if (st === UNREAD) said = false;
+    else if (st === 2) { if (!units[u].soft) { skip = true; said = false; } }
+    else if (st === 3) maybe = true;
+  }
+  return { said, skip, maybe };
+}
+function paint() {
   if (!model || !tokEls.length) return;
-  const { tokens, units, N } = model;
-  const T = tokens.length;
-  const pos = follower.pos;
-  const nextTok = mode === 'read' && pos < N ? units[pos].ti : -1;
-  let guideEnd = nextTok;
-  if (nextTok >= 0 && settings.span === 'phrase') {
-    let t = nextTok, n = 0;
-    while (t < T - 1 && n < 5 && !tokens[t].endsPhrase && tokens[t + 1].pid === tokens[nextTok].pid) { t++; n++; }
-    guideEnd = t;
+  const T = model.tokens.length;
+  const [ga, gb] = guideRange();
+  if (ga !== guideA || gb !== guideB) {
+    if (guideA >= 0) markDirtyTokens(guideA, guideB);
+    if (ga >= 0) markDirtyTokens(ga, gb);
+    guideA = ga; guideB = gb;
   }
-  const said = new Uint8Array(T);
-  const flags = new Array(T);
-  for (let t = 0; t < T; t++) {
-    const tok = tokens[t];
-    let isSaid = tok.spoken, skip = false, maybe = false;
-    for (let u = tok.u0; u < tok.u1; u++) {
-      const s = follower.eff(u);
-      if (s === UNREAD) isSaid = false;
-      else if (s === 2) { if (!units[u].soft) { skip = true; isSaid = false; } }
-      else if (s === 3) maybe = true;
-    }
-    said[t] = isSaid ? 1 : 0;
-    flags[t] = { skip, maybe };
-  }
-  for (let t = 0; t < T; t++) {
-    const el = tokEls[t];
-    if (!el) continue;
-    let c = 'w';
-    if (said[t]) c += ' said';
-    if (flags[t].skip) c += ' skip';
-    if (flags[t].maybe && said[t]) c += ' maybe';
-    if (nextTok >= 0 && t >= nextTok && t <= guideEnd) c += ' next';
-    let inTts = false;
-    if (tts) { inTts = t >= tts.t0 && t < tts.t1; if (inTts) c += ' tts-sent'; if (t === tts.cur) c += ' tts-word'; }
-    if (c !== tokCls[t]) { el.className = c; tokCls[t] = c; }
-    const g = gapEls[t];
-    if (g) {
-      let gc = 'g';
-      if (said[t] && t + 1 < T && said[t + 1]) gc += ' said';
-      if (inTts && t + 1 < tts.t1) gc += ' tts-sent';
-      if (gc !== gapCls[t]) { g.className = gc; gapCls[t] = gc; }
+  let lo, hi;
+  if (dirtyAll) { lo = 0; hi = T - 1; } else { lo = Math.max(0, dirtyLo - 1); hi = Math.min(T - 1, dirtyHi); }
+  dirtyAll = false; dirtyLo = Infinity; dirtyHi = -1;
+  if (hi >= lo) {
+    let next = tokState(lo);
+    for (let t = lo; t <= hi; t++) {
+      const cur = next;
+      next = t + 1 < T ? tokState(t + 1) : null;
+      const el = tokEls[t];
+      if (!el) continue;
+      let c = 'w';
+      if (cur.said) c += ' said';
+      if (cur.skip) c += ' skip';
+      if (cur.maybe && cur.said) c += ' maybe';
+      if (t >= guideA && t <= guideB) c += ' next';
+      let inTts = false;
+      if (tts) { inTts = t >= tts.t0 && t < tts.t1; if (inTts) c += ' tts-sent'; if (t === tts.cur) c += ' tts-word'; }
+      if (c !== tokCls[t]) { el.className = c; tokCls[t] = c; }
+      const g = gapEls[t];
+      if (g) {
+        let gc = 'g';
+        if (cur.said && next && next.said) gc += ' said';
+        if (t >= guideA && t < guideB) gc += ' next';
+        if (inTts && t + 1 < tts.t1) gc += ' tts-sent';
+        if (gc !== gapCls[t]) { g.className = gc; gapCls[t] = gc; }
+      }
     }
   }
+  if (scrollPending) { scrollPending = false; scrollToCurrent(false); }
 }
 
 // ---------- scrolling ----------
@@ -240,9 +317,12 @@ const scrollToCurrent = (force) => keepInView(currentEl(), force);
 // ---------- following ----------
 let saveTimer = null;
 function onFollow(e) {
-  updateClasses();
+  if (!model) return;
+  if (e && e.jump) dirtyAll = true;
+  else markDirtyUnits(Math.min(follower.anchor, lastFollowPos, follower.pos), Math.max(follower.pos, lastFollowPos) + 1);
+  lastFollowPos = follower.pos;
   $('#offScript').hidden = !(listening && follower.off);
-  scrollToCurrent(false);
+  scrollPending = true;
   if (e && e.jump && !listening) seekVideoToPos();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveProject, 1500);
@@ -272,6 +352,7 @@ function renderMic() {
   $('#offScript').hidden = !(listening && follower.off);
 }
 
+let startGen = 0;
 async function startListening() {
   if (listening || micBusy) return;
   if (!model || !model.N) { toast('Open a script first.'); return; }
@@ -279,6 +360,7 @@ async function startListening() {
   if (sound) { resumeAfterSound = false; setSound(false); }
   stopTTS();
   micBusy = true; renderMic();
+  const gen = ++startGen;
   $('#micLbl').textContent = 'Starting…';
   const eng = engineFor(settings.engine === 'google' ? 'google' : 'device');
   let showedLoad = false;
@@ -303,6 +385,7 @@ async function startListening() {
     return;
   }
   closeLoad();
+  if (gen !== startGen) { eng.stop(); return; } // stopped or paused while starting
   engine = eng;
   micBusy = false; listening = true;
   follower.commit(); follower.anchor = follower.pos; follower.segSkip = 0; follower.segLen = 0;
@@ -312,6 +395,7 @@ async function startListening() {
 }
 
 function stopListening() {
+  startGen++;
   if (engine) engine.stop();
   const was = listening;
   listening = false; micBusy = false;
@@ -327,6 +411,7 @@ function setVideoSrc(blob) {
   video.src = videoURL;
   video.muted = !sound;
   document.body.classList.remove('no-video');
+  layout();
 }
 function clearVideo() {
   if (videoURL) URL.revokeObjectURL(videoURL);
@@ -334,8 +419,10 @@ function clearVideo() {
   video.removeAttribute('src'); video.load();
   document.body.classList.add('no-video');
   if (model) model.times = computeTimes(model, NaN);
+  layout();
 }
 video.addEventListener('loadedmetadata', () => {
+  layout();
   if (model) model.times = computeTimes(model, video.duration);
   updateVTime();
   if (model && !model.anchors.length) toast('No timestamps in this script, so the video is spread evenly across it.');
@@ -345,7 +432,7 @@ video.addEventListener('timeupdate', () => { updateVTime(); markVideoSpot(); });
 video.addEventListener('play', () => { renderPlay(); wantAwake(); });
 video.addEventListener('pause', () => { renderPlay(); wantAwake(); });
 function updateVTime() { $('#vTime').textContent = `${fmtTime(video.currentTime)} / ${fmtTime(video.duration)}`; }
-function renderPlay() { const playing = !video.paused; $('#icoPlay').hidden = playing; $('#icoPause').hidden = !playing; $('#vPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
+function renderPlay() { const playing = !video.paused; $('#icoPlay').toggleAttribute('hidden', playing); $('#icoPause').toggleAttribute('hidden', !playing); $('#vPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
 
 function seekVideoToPos() {
   if (!hasVideo() || !model || !model.times || video.readyState < 1) return;
@@ -375,7 +462,7 @@ function setSound(on) {
   }
   $('#vSound').setAttribute('aria-pressed', on ? 'true' : 'false');
   $('#vSoundLbl').textContent = on ? 'Sound on' : 'Sound off';
-  $('#icoWaves').hidden = !on; $('#icoMute').hidden = on;
+  $('#icoWaves').toggleAttribute('hidden', !on); $('#icoMute').toggleAttribute('hidden', on);
 }
 
 let vSpotPid = null;
@@ -405,6 +492,7 @@ function driver() {
 }
 function tick() {
   requestAnimationFrame(tick);
+  paint();
   const now = performance.now() / 1000;
   const dt = Math.min(0.1, now - lastTick || 0.016);
   lastTick = now;
@@ -443,36 +531,80 @@ $('#vFwd').onclick = () => { if (!hasVideo()) return; setFollow(false); video.cu
 $('#vFollow').onclick = () => { if (follow) setFollow(false); else { video.pause(); setFollow(true); } };
 $('#vSound').onclick = () => setSound(!sound);
 
-// resize the video by dragging the bar above it
+// ---------- layout ----------
+// Portrait: the bar sets how tall the script area is; the video sits right under it, with empty space below if
+// it's moved up (so text is never behind or under the video). Landscape: the video is on the right; the bar sets its width.
+const mainEl = $('#main'), sideEl = $('#side'), paneEl = $('#videoPane');
+const GRIP = 18;
+const isLand = () => window.innerWidth > window.innerHeight;
+function layout() {
+  const land = isLand();
+  mainEl.classList.toggle('land', land);
+  $('#grip').setAttribute('aria-orientation', land ? 'vertical' : 'horizontal');
+  if (!hasVideo()) { scriptEl.style.flex = ''; sideEl.style.width = ''; paneEl.style.height = ''; return; }
+  const ar = video.videoWidth && video.videoHeight ? video.videoHeight / video.videoWidth : 9 / 16;
+  const W = mainEl.clientWidth, H = mainEl.clientHeight;
+  if (land) {
+    scriptEl.style.flex = '';
+    let w = settings.sideFrac ? settings.sideFrac * W : W * 0.45;
+    w = Math.round(Math.max(260, Math.min(W - GRIP - 280, w)));
+    sideEl.style.width = w + 'px';
+    const ctl = $('.vctl').offsetHeight || 60;
+    paneEl.style.height = Math.round(Math.min(w * ar, H - ctl) + ctl) + 'px';
+  } else {
+    sideEl.style.width = '';
+    paneEl.style.height = 'auto';
+    const ctl = $('.vctl').offsetHeight || 60;
+    const natural = W * ar + ctl;
+    let T = settings.textFrac != null ? settings.textFrac * H : H - GRIP - natural;
+    T = Math.round(Math.max(Math.min(90, H * 0.3), Math.min(H - GRIP - 140, T)));
+    scriptEl.style.flex = `0 0 ${T}px`;
+    paneEl.style.height = Math.round(Math.min(natural, H - GRIP - T)) + 'px';
+  }
+}
+let layoutTimer = null;
+window.addEventListener('resize', () => { layout(); clearTimeout(layoutTimer); layoutTimer = setTimeout(() => scrollToCurrent(true), 200); });
 (() => {
   const grip = $('#grip');
-  let drag = null;
-  grip.addEventListener('pointerdown', (e) => { drag = { y: e.clientY, h: $('#videoPane').getBoundingClientRect().height }; grip.setPointerCapture(e.pointerId); });
+  let drag = null, lastTap = 0;
+  grip.addEventListener('pointerdown', (e) => {
+    const now = performance.now();
+    if (now - lastTap < 350) { // double-tap resets
+      if (isLand()) settings.sideFrac = null; else settings.textFrac = null;
+      saveSettings(); layout(); scrollToCurrent(true); lastTap = 0; return;
+    }
+    lastTap = now;
+    drag = { rect: mainEl.getBoundingClientRect() };
+    grip.setPointerCapture(e.pointerId);
+  });
   grip.addEventListener('pointermove', (e) => {
     if (!drag) return;
-    const h = Math.max(120, Math.min(window.innerHeight * 0.75, drag.h + (drag.y - e.clientY)));
-    document.documentElement.style.setProperty('--video-h', Math.round(h) + 'px');
-    settings.videoH = Math.round(h);
+    const r = drag.rect;
+    if (isLand()) settings.sideFrac = Math.max(0.15, Math.min(0.8, (r.right - e.clientX - GRIP / 2) / r.width));
+    else settings.textFrac = Math.max(0.05, Math.min(0.95, (e.clientY - r.top - GRIP / 2) / r.height));
+    layout();
   });
-  const end = () => { if (drag) { drag = null; saveSettings(); } };
+  const end = () => { if (drag) { drag = null; saveSettings(); scrollToCurrent(true); } };
   grip.addEventListener('pointerup', end); grip.addEventListener('pointercancel', end);
 })();
 
 // ---------- listen mode (TTS) ----------
 function stopTTS() {
-  if (!tts && !speaker.busy) return;
-  speaker.stop();
+  if (!tts && !ttsBusy()) return;
+  speakers.android.stop(); speakers.piper.stop();
+  closeLoad();
   tts = null;
   updateClasses(); wantAwake();
 }
 function speakFrom(ti) {
-  if (!Speaker.supported()) { toast('This browser can’t read text aloud.'); return; }
+  const vc = voiceChoice();
+  if (vc.kind === 'android' && !Speaker.supported()) { toast('This browser can’t read text aloud.'); return; }
   const tok = model.tokens[ti];
   if (!tok || tok.sent < 0) return;
   let sents = settings.ttsUnit === 'para' ? model.sentences.filter((s) => s.pid === tok.pid) : [model.sentences[tok.sent]];
   sents = sents.filter(Boolean);
   if (!sents.length) return;
-  if (tts && tts.t0 === sents[0].t0 && speaker.busy) { stopTTS(); return; }
+  if (tts && tts.t0 === sents[0].t0 && ttsBusy()) { stopTTS(); return; }
   const chunks = sents.map((s) => {
     let text = '';
     const starts = [], words = [], syl = [];
@@ -489,10 +621,10 @@ function speakFrom(ti) {
   tts = { t0: sents[0].t0, t1: sents[sents.length - 1].t1, cur: -1, tracker: new RateTracker() };
   follower.jumpTo(model.tokens[tts.t0].u0, false);
   if (hasVideo()) { setFollow(true); }
-  speaker.speak(chunks, { voiceURI: settings.voiceURI, rate: settings.ttsRate }, {
-    word: (t) => { if (!tts) return; tts.cur = t; tts.tracker.push(model.tokens[t].u0); updateClasses(); keepInView(tokEls[t], false); },
-    end: () => { tts = null; updateClasses(); wantAwake(); },
-  });
+  speakers[vc.kind].speak(chunks, { ...vc, rate: settings.ttsRate }, ttsCallbacks({
+    word: (t) => { if (!tts) return; tts.cur = t; tts.tracker.push(model.tokens[t].u0); markDirtyTokens(tts.t0, tts.t1); keepInView(tokEls[t], false); },
+    end: () => { if (tts) markDirtyTokens(tts.t0, tts.t1); tts = null; wantAwake(); },
+  }));
   updateClasses(); wantAwake();
 }
 
@@ -604,7 +736,7 @@ async function saveProject() {
 }
 
 async function loadProject(p) {
-  stopListening(); stopTTS();
+  stopListening(); stopTTS(); resumeWanted = false;
   project = p;
   settings.lastProject = p.id; saveSettings();
   model = buildModel(p.paras.map((x) => ({ ...x })), NaN);
@@ -702,7 +834,7 @@ function setMode(m) {
 $('#mRead').onclick = () => setMode('read');
 $('#mListen').onclick = () => setMode('listen');
 $('#mEdit').onclick = () => setMode('edit');
-$('#btnMic').onclick = () => { if (listening || micBusy) stopListening(); else startListening(); };
+$('#btnMic').onclick = () => { resumeWanted = false; if (listening || micBusy) stopListening(); else startListening(); };
 
 docEl.addEventListener('click', (e) => {
   if (!model || !project) return;
@@ -747,10 +879,27 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') stopTTS();
 });
 
+// The mic pauses while Settings or Files is open, when the app loses focus, or when the screen goes off,
+// and comes back on afterwards if it was on.
+const pauseReasons = new Set();
+let resumeWanted = false;
+function pauseMic(reason) {
+  pauseReasons.add(reason);
+  if (listening || micBusy) { resumeWanted = true; stopListening(); }
+}
+function resumeMic(reason) {
+  pauseReasons.delete(reason);
+  if (pauseReasons.size || !resumeWanted) return;
+  resumeWanted = false;
+  if (mode === 'read' && !sound && project) startListening();
+}
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { if (listening) stopListening(); stopTTS(); saveProject(); }
-  else wantAwake();
+  if (document.hidden) { pauseMic('hidden'); stopTTS(); saveProject(); }
+  else { resumeMic('hidden'); wantAwake(); }
 });
+window.addEventListener('blur', () => pauseMic('blur'));
+window.addEventListener('focus', () => resumeMic('blur'));
+for (const id of ['#dlgSettings', '#dlgFiles']) $(id).addEventListener('close', () => resumeMic('dialog'));
 
 // ---------- dialogs ----------
 for (const d of document.querySelectorAll('dialog')) {
@@ -760,6 +909,7 @@ for (const d of document.querySelectorAll('dialog')) {
 }
 function openLoad(title, text) { $('#lTitle').textContent = title; $('#lText').textContent = text; $('#lBar').style.width = '0%'; if (!$('#dlgLoad').open) $('#dlgLoad').showModal(); }
 function closeLoad() { if ($('#dlgLoad').open) $('#dlgLoad').close(); }
+$('#lHide').onclick = closeLoad;
 let confirmFn = null;
 function confirmDo(title, text, yes, fn) {
   $('#cTitle').textContent = title; $('#cText').textContent = text; $('#cYes').textContent = yes;
@@ -777,7 +927,7 @@ function renderFiles() {
   for (const id of ['#fExportDocx', '#fExportTxt', '#fClearMarks']) $(id).disabled = !has;
   fillProjectList($('#projList'));
 }
-$('#btnFiles').onclick = () => { renderFiles(); $('#dlgFiles').showModal(); };
+$('#btnFiles').onclick = () => { pauseMic('dialog'); renderFiles(); $('#dlgFiles').showModal(); };
 $('#fOpenScript').onclick = () => $('#fileScript').click();
 $('#fOpenVideo').onclick = () => $('#fileVideo').click();
 $('#fRemoveVideo').onclick = () => confirmDo('Remove the video?', 'The video is removed from this script on the tablet. Your file elsewhere isn’t touched.', 'Remove', async () => {
@@ -789,13 +939,37 @@ $('#fExportDocx').onclick = () => download(project.name + ' (edited).docx', para
 $('#fExportTxt').onclick = () => download(project.name + ' (edited).txt', paragraphsToText(project.paras.map((p) => p.text)), 'text/plain');
 $('#fClearMarks').onclick = () => { follower.clearMarks(); follower.jumpTo(0, true); saveProject(); toast('Read marks cleared.'); };
 
+// The first download of a natural voice shows progress; any voice error is shown as a notice.
+function ttsCallbacks(cb) {
+  let shown = false;
+  return {
+    ...cb,
+    progress: (f) => {
+      if (!shown) { shown = true; openLoad('Getting the voice', 'One-time download (about 60 MB). After this it works offline.'); }
+      $('#lBar').style.width = Math.round(f * 100) + '%';
+      if (f >= 1) $('#lText').textContent = 'Starting the voice…';
+    },
+    word: (...a) => { if (shown) { shown = false; closeLoad(); } cb.word && cb.word(...a); },
+    end: () => { closeLoad(); cb.end && cb.end(); },
+    error: (msg) => { closeLoad(); toast(msg, 5000); },
+  };
+}
 function fillVoices() {
   const sel = $('#selVoice');
-  const vs = englishVoices();
   sel.textContent = '';
-  const def = document.createElement('option'); def.value = ''; def.textContent = 'Tablet default'; sel.appendChild(def);
-  for (const v of vs) { const o = document.createElement('option'); o.value = v.voiceURI; o.textContent = `${v.name}${v.localService ? '' : ' (online)'}`; sel.appendChild(o); }
-  sel.value = vs.some((v) => v.voiceURI === settings.voiceURI) ? settings.voiceURI : '';
+  const ga = document.createElement('optgroup'); ga.label = 'Android voice';
+  const def = document.createElement('option'); def.value = 'android:'; def.textContent = 'Android voice (set in Android settings)'; ga.appendChild(def);
+  for (const v of englishVoices()) { const o = document.createElement('option'); o.value = 'android:' + v.voiceURI; o.textContent = `${v.name}${v.localService ? '' : ' (online)'}`; ga.appendChild(o); }
+  const gp = document.createElement('optgroup'); gp.label = 'Natural voices (on tablet)';
+  for (const v of PIPER_VOICES) {
+    const o = document.createElement('option'); o.value = 'piper:' + v.id; o.textContent = v.name; gp.appendChild(o);
+    voiceIsDownloaded(v.id).then((d) => { if (d) o.textContent = v.name + ' ✓'; });
+  }
+  sel.append(ga, gp);
+  sel.value = [...sel.options].some((o) => o.value === settings.ttsVoice) ? settings.ttsVoice : 'android:';
+  $('#voiceNote').textContent = voiceChoice().kind === 'piper'
+    ? 'Natural voice: runs on the tablet. Downloads once (about 60 MB, ✓ = already on the tablet), then works offline. Each sentence takes a moment to prepare.'
+    : 'Android voice: Chrome on Android lists languages, not voices. The voice it uses is the one picked in Android Settings: search “Text-to-speech”, choose Speech Services by Google, then its settings → Install voice data → English (United States) to pick or download a higher-quality voice.';
 }
 if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', fillVoices);
 
@@ -806,13 +980,13 @@ async function syncSettingsUI() {
   $('#selMarks').value = settings.marks; $('#selUnit').value = settings.ttsUnit;
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
   $('#engineNote').textContent = settings.engine === 'google'
-    ? 'Google: sends your audio to Google for recognition and needs internet.'
-    : 'On tablet: your voice stays on the tablet. The first start downloads a 41 MB speech model once.';
+    ? 'Android speech: Chrome’s speech recognition, which is Google’s. More accurate than the on-tablet engine, but it sends your audio to Google and usually needs internet.'
+    : 'On tablet: your voice stays on the tablet and it works offline. The first start downloads a 41 MB speech model once.';
   fillVoices();
   const cached = await modelIsCached();
   $('#aboutLine').textContent = `VO Prompter ${VERSION} · speech model ${cached ? 'downloaded' : 'not downloaded yet'}`;
 }
-$('#btnSettings').onclick = () => { syncSettingsUI(); $('#dlgSettings').showModal(); };
+$('#btnSettings').onclick = () => { pauseMic('dialog'); syncSettingsUI(); $('#dlgSettings').showModal(); };
 const bindSel = (id, key, after) => { $(id).onchange = (e) => { settings[key] = e.target.value; saveSettings(); applySettings(); updateClasses(); syncSettingsUI(); if (after) after(); }; };
 $('#sText').oninput = (e) => { settings.textSize = +e.target.value; $('#oText').textContent = settings.textSize + ' px'; applySettings(); };
 $('#sText').onchange = () => { saveSettings(); scrollToCurrent(true); };
@@ -820,16 +994,19 @@ bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 
 bindSel('#selMarks', 'marks');
 bindSel('#selEngine', 'engine', () => { if (listening) { stopListening(); startListening(); } });
 bindSel('#selMic', 'micSource', () => { if (listening) { stopListening(); startListening(); } });
-bindSel('#selUnit', 'ttsUnit'); bindSel('#selVoice', 'voiceURI');
+bindSel('#selUnit', 'ttsUnit'); bindSel('#selVoice', 'ttsVoice');
 $('#sRate').oninput = (e) => { settings.ttsRate = +e.target.value; $('#oRate').textContent = '×' + settings.ttsRate.toFixed(2); };
 $('#sRate').onchange = saveSettings;
 $('#btnTestVoice').onclick = () => {
-  if (!Speaker.supported()) { toast('This browser can’t read text aloud.'); return; }
-  speaker.speak([{ text: 'This is how the voice sounds at this speed.', starts: [0], words: [-1], syl: [12] }], { voiceURI: settings.voiceURI, rate: settings.ttsRate }, {});
+  const vc = voiceChoice();
+  if (vc.kind === 'android' && !Speaker.supported()) { toast('This browser can’t read text aloud.'); return; }
+  speakers.android.stop(); speakers.piper.stop();
+  speakers[vc.kind].speak([{ text: 'This is how the voice sounds at this speed.', starts: [0], words: [-1], syl: [12] }], { ...vc, rate: settings.ttsRate },
+    ttsCallbacks({ end: () => syncSettingsUI() }));
 };
 
 // ---------- uninstall ----------
-$('#btnWipe').onclick = () => confirmDo('Remove all app data?', 'Deletes every script, edit, video and setting from this tablet, plus the downloaded speech model. This can’t be undone.', 'Remove everything', async () => {
+$('#btnWipe').onclick = () => confirmDo('Remove all app data?', 'Deletes every script, edit, video and setting from this tablet, plus the downloaded speech model and voices. This can’t be undone.', 'Remove everything', async () => {
   $('#dlgSettings').close();
   stopListening(); stopTTS();
   for (const k of Object.keys(engines)) { try { engines[k].unload(); } catch (e) { /* ignore */ } }
@@ -847,6 +1024,7 @@ $('#btnWipe').onclick = () => confirmDo('Remove all app data?', 'Deletes every s
 
 // ---------- start ----------
 applySettings();
+layout();
 renderMic();
 setSound(false);
 setFollow(true);

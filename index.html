@@ -22,7 +22,7 @@
   --said-bg: rgba(242,163,58,.17); --said-dim: #6f7783; --tts-bg: rgba(120,170,255,.16);
   --font-ui: "Atkinson Hyperlegible", "Segoe UI", Roboto, system-ui, sans-serif;
   --font-num: "JetBrains Mono", ui-monospace, "Roboto Mono", monospace;
-  --script-size: 28px; --video-h: 34vh;
+  --script-size: 28px;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
@@ -91,14 +91,14 @@ button { cursor: pointer; }
 .doc::after { content: ""; display: block; height: 60vh; } /* lets the last lines scroll up to the top */
 .para { font-size: var(--script-size); line-height: 1.5; margin: 0 0 .62em; padding: 0 0 0 12px; border-left: 3px solid transparent; overflow-wrap: anywhere; }
 .para.k-heading, .para.k-note, .para.k-marker, .para.k-skip, .para.k-end, .para.k-after-end {
-  font-size: calc(var(--script-size) * .62); color: var(--muted); letter-spacing: .04em;
+  font-size: max(calc(var(--script-size) * .62), 11px); color: var(--muted); letter-spacing: .04em;
 }
 .para.k-heading { font-weight: 700; text-transform: uppercase; margin-top: 1em; }
 .para.k-marker { font-family: var(--font-num); }
 .para.k-skip, .para.k-after-end { text-decoration: line-through; }
 .para.vidhere { border-left-color: var(--accent); }
-.para .ns { color: var(--muted); font-size: .64em; letter-spacing: .03em; vertical-align: .12em; }
-.para .stamp { font-family: var(--font-num); font-size: .5em; color: var(--muted); border: 1px solid var(--rule); border-radius: 6px; padding: 1px 6px; margin-right: 8px; vertical-align: .3em; cursor: pointer; }
+.para .ns { color: var(--muted); font-size: max(.64em, 11px); letter-spacing: .03em; vertical-align: .12em; }
+.para .stamp { font-family: var(--font-num); font-size: max(.5em, 11px); color: var(--muted); border: 1px solid var(--rule); border-radius: 6px; padding: 1px 6px; margin-right: 8px; vertical-align: .3em; cursor: pointer; }
 .para .stamp:hover { color: var(--fg); }
 .para .edited-dot { display: inline-block; width: .32em; height: .32em; border-radius: 50%; background: var(--accent); margin-left: .3em; vertical-align: .25em; }
 .w { border-radius: 4px; cursor: pointer; --txt: var(--fg); --guide: var(--accent); }
@@ -108,7 +108,7 @@ button { cursor: pointer; }
 .said-dim .w.said { color: var(--said-dim); }
 /* what to read next */
 .guide-fill .w.next { color: var(--guide); }
-.guide-under .w.next { background-image: linear-gradient(var(--guide), var(--guide)); background-position: left bottom; background-size: 100% 3px; background-repeat: no-repeat; }
+.guide-under .w.next, .guide-under .g.next { background-image: linear-gradient(var(--guide), var(--guide)); background-position: left bottom; background-size: 100% 3px; background-repeat: no-repeat; }
 /* mistakes */
 .marks .w.skip { text-decoration: underline wavy var(--over); text-decoration-thickness: 2px; text-underline-offset: 6px; text-decoration-skip-ink: none; }
 .marks-all .w.maybe { text-decoration: underline dotted var(--close); text-decoration-thickness: 3px; text-underline-offset: 6px; }
@@ -128,19 +128,28 @@ button { cursor: pointer; }
 .empty p { margin: 0; color: var(--muted); font-size: 17px; }
 .back-pill { position: sticky; bottom: 14px; margin: 0 auto; display: block; width: max-content; z-index: 5; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
 
-/* Video */
+/* Layout: portrait = script, bar, video under it (drag the bar to move the video up or down);
+   landscape = script on the left, video on the right (drag the bar to resize). */
+.main { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.main.land { flex-direction: row; }
+.main > .script { flex: 1 1 auto; }
 .grip { flex: 0 0 18px; display: grid; place-items: center; cursor: row-resize; touch-action: none; background: var(--surface); border-top: 1px solid var(--rule); }
-.grip::before { content: ""; width: 54px; height: 5px; border-radius: 3px; background: var(--rule); }
-.video-pane { flex: 0 0 var(--video-h); min-height: 120px; display: flex; flex-direction: column; background: var(--surface); }
+.grip::before { content: ""; width: 54px; height: 5px; border-radius: 3px; background: var(--muted); opacity: .6; }
+.main.land .grip { cursor: col-resize; border-top: 0; border-left: 1px solid var(--rule); }
+.main.land .grip::before { width: 5px; height: 54px; }
+.side { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.main.land .side { flex: 0 0 auto; }
+.video-pane { flex: 0 0 auto; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+.side .filler { flex: 1 1 auto; }
 .vwrap { flex: 1 1 auto; min-height: 0; background: #000; position: relative; }
 .vwrap video { width: 100%; height: 100%; object-fit: contain; display: block; }
 .vwrap .rate { position: absolute; right: 10px; top: 8px; font-family: var(--font-num); font-size: 13px; color: #fff; background: rgba(0,0,0,.55); padding: 2px 7px; border-radius: 6px; }
-.vctl { display: flex; align-items: center; gap: 8px; padding: 8px max(14px, env(safe-area-inset-right, 0px)) 8px max(14px, env(safe-area-inset-left, 0px)); flex-shrink: 0; }
+.vctl { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px max(14px, env(safe-area-inset-right, 0px)) 8px max(14px, env(safe-area-inset-left, 0px)); flex-shrink: 0; }
 .vctl .btn { height: 44px; min-width: 52px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .vctl .btn svg { width: 20px; height: 20px; }
 .vctl .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 .vtime { font-family: var(--font-num); font-size: 14px; color: var(--muted); white-space: nowrap; flex: 1 1 auto; text-align: center; }
-.no-video .grip, .no-video .video-pane { display: none; }
+.no-video .grip, .no-video .side { display: none; }
 
 /* Dialogs */
 dialog { border: 1px solid var(--rule); border-radius: 14px; background: var(--surface); color: var(--fg); padding: 0; width: min(680px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); }
@@ -193,12 +202,14 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
   </button>
 </header>
 
+<div class="main" id="main">
 <main class="script" id="script" aria-label="Script">
   <div class="doc" id="doc"></div>
   <button class="btn back-pill" id="backPill" hidden>Back to reading spot</button>
 </main>
 
-<div class="grip" id="grip" role="separator" aria-label="Drag to resize the video"></div>
+<div class="grip" id="grip" role="separator" aria-label="Drag to move or resize the video. Double-tap to reset." title="Drag to move or resize the video. Double-tap to reset."></div>
+<div class="side" id="side">
 <section class="video-pane" id="videoPane" aria-label="Video">
   <div class="vwrap"><video id="video" playsinline muted preload="auto"></video><span class="rate" id="vRate" hidden></span></div>
   <div class="vctl">
@@ -216,6 +227,9 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     </button>
   </div>
 </section>
+<div class="filler"></div>
+</div>
+</div>
 
 <input type="file" id="fileScript" accept=".docx,.txt,.md,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" hidden>
 <input type="file" id="fileVideo" accept="video/*,.mp4,.m4v,.mov,.webm" hidden>
@@ -250,16 +264,16 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
   <div class="dlg-body">
     <fieldset>
       <legend>Text</legend>
-      <div class="row"><label for="sText">Text size</label><output id="oText"></output><input type="range" id="sText" min="18" max="56" step="1"></div>
+      <div class="row"><label for="sText">Text size</label><output id="oText"></output><input type="range" id="sText" min="10" max="56" step="1"></div>
       <div class="size-preview">The quick brown fox jumps over the lazy dog.</div>
       <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="hl">Highlight</option><option value="dim">Dim</option><option value="off">No change</option></select></div>
-      <div class="row"><label for="selGuide">Next to read</label><select id="selGuide"><option value="under">Underline</option><option value="fill">Fill the letters</option></select></div>
-      <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="word">Next word</option><option value="phrase">Next phrase</option></select></div>
+      <div class="row"><label for="selGuide">Guide style</label><select id="selGuide"><option value="under">Underline</option><option value="fill">Fill the letters</option></select></div>
+      <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="off">Off</option><option value="word">Next word</option><option value="phrase">Next phrase</option><option value="line">Whole line</option><option value="sentence">Whole sentence</option><option value="para">Whole paragraph</option></select></div>
       <div class="row"><label for="selTheme">Theme</label><select id="selTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">Match the tablet</option></select></div>
     </fieldset>
     <fieldset>
       <legend>Following your voice</legend>
-      <div class="row"><label for="selEngine">Speech engine</label><select id="selEngine"><option value="device">On tablet (private, offline)</option><option value="google">Google (online)</option></select>
+      <div class="row"><label for="selEngine">Speech engine</label><select id="selEngine"><option value="device">On tablet (private, offline)</option><option value="google">Android speech (Google, more accurate)</option></select>
         <small id="engineNote">On tablet: your voice stays on the tablet. The first start downloads a 41 MB speech model once.</small></div>
       <div class="row"><label for="selMic">Mic</label><select id="selMic"><option value="builtin">Tablet mic</option><option value="default">Default mic</option></select>
         <small>The tablet mic keeps Bluetooth earbuds out of phone-call mode. Applies to the on-tablet engine.</small></div>
@@ -269,7 +283,7 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     <fieldset>
       <legend>Listen mode</legend>
       <div class="row"><label for="selUnit">Tap reads</label><select id="selUnit"><option value="sentence">The sentence</option><option value="para">The paragraph</option></select></div>
-      <div class="row"><label for="selVoice">Voice</label><select id="selVoice"></select></div>
+      <div class="row"><label for="selVoice">Voice</label><select id="selVoice"></select><small id="voiceNote"></small></div>
       <div class="row"><label for="sRate">Speed</label><output id="oRate"></output><input type="range" id="sRate" min="0.6" max="1.6" step="0.05"></div>
       <div class="btns"><button class="btn" id="btnTestVoice">Test voice</button></div>
     </fieldset>
@@ -290,7 +304,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
 
 <dialog id="dlgLoad">
   <div class="dlg-head"><h2 id="lTitle">Loading</h2></div>
-  <div class="dlg-body"><p class="note" id="lText"></p><div class="progress"><div id="lBar"></div></div></div>
+  <div class="dlg-body"><p class="note" id="lText"></p><div class="progress"><div id="lBar"></div></div>
+    <div class="btns"><button class="btn" id="lHide">Hide (keeps downloading)</button></div></div>
 </dialog>
 
 <div class="notices" id="notices" aria-live="polite"></div>

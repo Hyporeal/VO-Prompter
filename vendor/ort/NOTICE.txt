@@ -1,0 +1,2 @@
+ort.wasm.min.js and the .wasm files are onnxruntime-web 1.18.0 by Microsoft, https://github.com/microsoft/onnxruntime
+License: MIT

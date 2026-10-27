@@ -1,8 +1,8 @@
-// Collects mic audio in 100 ms blocks and posts them (with a level reading) to the page.
+// Collects mic audio in 50 ms blocks and posts them (with a level reading) to the page.
 class VopCapture extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.n = Math.round(sampleRate * 0.1);
+    this.n = Math.round(sampleRate * 0.05);
     this.buf = new Float32Array(this.n);
     this.i = 0;
     this.sum = 0;

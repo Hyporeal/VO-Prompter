@@ -6,8 +6,8 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 
 ## Modes
 
-- **Read**: tap **Start** and read. Words you've read are highlighted, and the next word (or phrase) is underlined or filled. The line you're on stays near the top with the previous line above it. Tap any word to move there; the video jumps with you.
-- **Listen**: tap a sentence (or paragraph, in Settings) to hear it read aloud by the tablet's voice. Tap it again to stop. The video follows the voice.
+- **Read**: tap **Start** and read. Words you've read are highlighted, and a guide shows what's next. The line you're on stays near the top with the previous line above it. Tap any word to move there; the video jumps with you.
+- **Listen**: tap a sentence (or paragraph, in Settings) to hear it read aloud. Tap it again to stop. The video follows the voice.
 - **Edit**: tap a paragraph to change it. Edited paragraphs get a small dot. **Files → Export** saves the edited script as .docx or .txt. The original file isn't changed.
 
 ## Video
@@ -17,7 +17,9 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 - **Play**, **−5s**, **+5s**: play or move the video yourself. This turns Follow off; tap **Follow** to go back to your reading spot.
 - **Sound on** turns the mic off so you can listen to the reference. **Sound off** turns the mic back on if it was on.
 - While Follow is off, a bar in the left margin shows which paragraph the video is at.
-- Drag the bar above the video to resize it.
+- **Portrait**: drag the bar above the video to move it up or down. The script area shrinks to fit above it, so text is never behind or under the video.
+- **Landscape**: the video sits on the right; drag the bar to change its width.
+- Double-tap the bar to reset.
 
 ## Script format
 
@@ -30,12 +32,25 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 
 Without timestamps, the video is spread evenly across the whole script.
 
-## Speech engines (Settings)
+## Settings
+
+- **Text size**: 10 to 56 px.
+- **Guide style**: underline or fill the letters.
+- **Guide covers**: off, next word, next phrase, whole line (the line on screen), whole sentence, or whole paragraph. While you read, the guide runs slightly ahead of the last recognized word to make up for the recognizer's delay.
+
+## Speech engines
 
 - **On tablet** (default): [Vosk](https://alphacephei.com/vosk/) running in the browser. Your voice never leaves the tablet. The first start downloads a 41 MB model once; after that it works offline.
-- **Google**: Chrome's built-in recognition. Sends audio to Google and needs internet.
+- **Android speech (Google)**: Chrome's speech recognition, which is Google's. More accurate, but it sends audio to Google and usually needs internet.
 
 The **Tablet mic** setting keeps Bluetooth earbuds out of phone-call mode.
+
+The mic pauses while Settings or Files is open, when the app loses focus, or when the screen goes off, and turns back on when you return if it was on.
+
+## Listen-mode voices
+
+- **Android voice**: the tablet's text-to-speech. Chrome on Android lists languages rather than voices; the voice used is the one picked in Android Settings (search "Text-to-speech", choose Speech Services by Google, then Install voice data → English (United States)).
+- **Natural voices**: [Piper](https://github.com/rhasspy/piper) neural voices running on the tablet. Each downloads once (about 60 MB) from the Piper voice library, then works offline. Each sentence takes a moment to prepare.
 
 ## Mistake marks
 
@@ -54,10 +69,13 @@ Scripts, edits and videos are stored only in the tablet's browser storage. This 
 
 ## Uninstall
 
-**Settings → Remove app data** deletes every script, video, setting and the speech model from the tablet. Then long-press the VO Prompter icon and choose **Uninstall** (or **App info → Uninstall**).
+**Settings → Remove app data** deletes every script, video, setting, the speech model and downloaded voices from the tablet. Then long-press the VO Prompter icon and choose **Uninstall** (or **App info → Uninstall**).
 
 ## Credits
 
 - [vosk-browser](https://github.com/ccoreilly/vosk-browser) 0.0.8 (Apache-2.0) in `vendor/`
 - Vosk model `vosk-model-small-en-us-0.15` by Alpha Cephei (Apache-2.0) in `models/`
+- [onnxruntime-web](https://github.com/microsoft/onnxruntime) 1.18.0 (MIT) in `vendor/ort/`
+- piper_phonemize WebAssembly build of [piper-phonemize](https://github.com/rhasspy/piper-phonemize) (MIT) and [espeak-ng](https://github.com/espeak-ng/espeak-ng) (GPL-3.0) in `vendor/piper/`
+- Piper voices are downloaded on demand from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); each voice's license is in its model card
 - Atkinson Hyperlegible and JetBrains Mono fonts (SIL Open Font License) in `fonts/`

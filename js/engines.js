@@ -6,13 +6,19 @@ export const MODEL_URL = 'models/vosk-model-small-en-us-0.15.tar.gz';
 export const MODEL_CACHE = 'vo-prompter-model-v1';
 const MODEL_BYTES = 41205354;
 
+// Loads a script once; a failed load is removed so the next attempt really retries.
+const scriptLoads = new Map();
 function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[data-src="${src}"]`)) return resolve();
+  if (scriptLoads.has(src)) return scriptLoads.get(src);
+  const p = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = src; s.dataset.src = src; s.onload = resolve; s.onerror = () => reject(new Error('Couldn’t load ' + src));
+    s.src = src; s.dataset.src = src;
+    s.onload = resolve;
+    s.onerror = () => { s.remove(); scriptLoads.delete(src); reject(new Error('Couldn’t load ' + src + '. Check the connection and try again.')); };
     document.head.appendChild(s);
   });
+  scriptLoads.set(src, p);
+  return p;
 }
 
 async function modelBlobUrl(onProgress) {
@@ -112,6 +118,9 @@ export class OnDeviceEngine {
     await this.load(opts.onProgress);
     const { stream, label } = await openMic(opts.micSource);
     this.stream = stream; this.micLabel = label; this.usedNonBuiltin = opts.micSource !== 'builtin' || NOT_BUILTIN.test(label);
+    try { await this.startAudio(stream); } catch (e) { this.stop(); throw e; } // never leave the mic open after a failed start
+  }
+  async startAudio(stream) {
     let ctx;
     try { ctx = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' }); } catch (e) { ctx = new AudioContext({ latencyHint: 'interactive' }); }
     let src;

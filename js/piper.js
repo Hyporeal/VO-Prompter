@@ -18,13 +18,19 @@ export const PIPER_VOICES = [
 const HF = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/';
 export const VOICE_CACHE = 'vo-prompter-voices-v1';
 
+// Loads a script once; a failed load is removed so the next attempt really retries.
+const scriptLoads = new Map();
 function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[data-src="${src}"]`)) return resolve();
+  if (scriptLoads.has(src)) return scriptLoads.get(src);
+  const p = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = src; s.dataset.src = src; s.onload = resolve; s.onerror = () => reject(new Error('Couldn’t load ' + src));
+    s.src = src; s.dataset.src = src;
+    s.onload = resolve;
+    s.onerror = () => { s.remove(); scriptLoads.delete(src); reject(new Error('Couldn’t load ' + src + '. Check the connection and try again.')); };
     document.head.appendChild(s);
   });
+  scriptLoads.set(src, p);
+  return p;
 }
 
 async function cachedFetch(url, onProgress) {

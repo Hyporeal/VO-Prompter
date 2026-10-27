@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.9';
+const VERSION = '1.1.10';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -506,6 +506,7 @@ async function startListening() {
       },
     });
   } catch (err) {
+    try { eng.stop(); } catch (e) { /* already stopped */ }
     micBusy = false; renderMic(); closeLoad();
     const msg = err && err.name === 'NotAllowedError' ? 'Mic permission was refused. Allow it in the browser’s site settings, then try again.' : (err && err.message) || String(err);
     toast(msg, 5000);

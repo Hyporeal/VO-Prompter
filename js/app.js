@@ -6,7 +6,7 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 
-const VERSION = '1.1.14';
+const VERSION = '1.1.15';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -34,7 +34,6 @@ let editing = null;
 let videoURL = null;
 let wakeLock = null;
 let curTake = null; // the listening stretch being recorded (Settings → Save recordings)
-const endedTakes = [];
 
 const follower = new Follower(onFollow);
 const speakers = { android: new Speaker(), piper: new PiperSpeaker() };
@@ -478,7 +477,6 @@ function engineFor(kind) {
     const cb = {
       partial: (t) => { follower.input(t, false); logTake(t, 0); },
       final: (t) => { follower.input(t, true); logTake(t, 1); },
-      recorded: (blob) => saveTake(blob, endedTakes.shift()),
       level: (rms) => { const v = Math.min(1, Math.sqrt(rms) * 3.2); $('#micDot').style.transform = `scale(${1 + v * 0.9})`; },
       error: (msg) => { toast(msg, 5000); stopListening(); },
       dropped: () => micDropped(),
@@ -523,7 +521,7 @@ async function startListening() {
   try {
     await eng.start({
       micSource: settings.micSource,
-      record: !!settings.saveTakes,
+      record: settings.saveTakes ? newTake() : null,
       onProgress: (p) => {
         if (p.phase === 'download') {
           if (!showedLoad) { showedLoad = true; openLoad('Getting the speech model', 'One-time download (41 MB). After this it works offline.'); }
@@ -549,7 +547,7 @@ async function startListening() {
   if (gen !== startGen) { eng.stop(); return; } // stopped or paused while starting
   engine = eng;
   micBusy = false; listening = true;
-  if (eng.recorder) curTake = { t0: eng.recStartedAt || performance.now(), wall: Date.now(), from: model.tokens[model.units[Math.min(follower.pos, model.N - 1)].ti].ti, events: [] };
+  if (settings.saveTakes && !eng.recorder) toast(settings.engine === 'google' ? 'Recordings work with the on-tablet engine only.' : 'Recording didn’t start: ' + (eng.recError || 'not supported here') + '. Listening works as usual.', 6000);
   follower.commit(); follower.anchor = follower.pos; follower.segSkip = 0; follower.segLen = 0;
   setFollow(true);
   renderMic(); wantAwake();
@@ -570,7 +568,7 @@ function micDropped() {
 
 function stopListening() {
   startGen++;
-  if (curTake) { endedTakes.push(curTake); curTake = null; }
+  curTake = null;
   if (engine) engine.stop();
   const was = listening;
   listening = false; micBusy = false;
@@ -1153,28 +1151,39 @@ $('#cNo').onclick = () => { confirmFn = null; $('#dlgConfirm').close(); };
 // heard and where it put you, to test the app on real reads. Kept on the tablet (Files → Recordings) until saved.
 const TAKES = 'vo-prompter-takes-v1';
 function logTake(text, final) { if (curTake) curTake.events.push([Math.round(performance.now() - curTake.t0), text, final, follower.pos]); }
-async function saveTake(blob, meta) {
-  if (!blob || !meta) return;
-  const d = new Date(meta.wall), p2 = (n) => String(n).padStart(2, '0');
-  const base = `vo-take-${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-from-word-${meta.from}`;
-  const ext = /mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm';
-  const log = { app: VERSION, started: new Date(meta.wall).toISOString(), fromWord: meta.from, audio: base + '.' + ext, audioType: blob.type,
-    settings: Object.fromEntries(['span', 'overlap', 'said', 'textSize', 'linesAbove', 'scrollEvery', 'scrollStyle', 'micSource'].map((k) => [k, settings[k]])),
-    note: 'events: [ms after recording started, recognized text, final (1) or partial (0), reading spot (word unit) after it]', events: meta.events };
-  try {
-    const c = await caches.open(TAKES);
-    await c.put(new URL('takes/' + base + '.' + ext, location.href).href, new Response(blob, { headers: { 'content-type': blob.type || 'audio/webm' } }));
-    await c.put(new URL('takes/' + base + '.json', location.href).href, new Response(JSON.stringify(log), { headers: { 'content-type': 'application/json' } }));
-    toast('Recording saved (Files → Recordings).');
-    if ($('#dlgFiles').open) renderTakes();
-  } catch (e) { noteError('take: ' + e.message); toast('Couldn’t keep the recording on the tablet (storage full?).'); }
+// Each take is stored as it's recorded: <base>.partNNNNN pieces of audio and <base>.json (the log), so a take
+// survives even if the app is closed or the tablet sleeps mid-read.
+function newTake() {
+  const d = new Date(), p2 = (n) => String(n).padStart(2, '0');
+  const from = model ? model.tokens[model.units[Math.min(follower.pos, model.N - 1)].ti].ti : 0;
+  const take = { base: `vo-take-${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-from-word-${from}`,
+    wall: d.getTime(), from, t0: performance.now(), n: 0, type: '', events: [], chain: Promise.resolve(), failed: false };
+  const key = (k) => new URL('takes/' + take.base + k, location.href).href;
+  const write = (k, body, type) => { take.chain = take.chain.then(async () => {
+    try { const c = await caches.open(TAKES); await c.put(key(k), new Response(body, { headers: { 'content-type': type } })); }
+    catch (e) { if (!take.failed) { take.failed = true; noteError('take: ' + e.message); toast('Couldn’t store the recording (storage full?).'); } }
+  }); };
+  const writeLog = () => write('.json', JSON.stringify({ app: VERSION, started: new Date(take.wall).toISOString(), fromWord: take.from, audioType: take.type,
+    settings: Object.fromEntries(['engine', 'span', 'overlap', 'said', 'textSize', 'linesAbove', 'scrollEvery', 'scrollStyle', 'micSource'].map((k) => [k, settings[k]])),
+    note: 'events: [ms after recording started, recognized text, final (1) or partial (0), reading spot (word unit) after it]', events: take.events }), 'application/json');
+  take.onStart = (type) => { take.t0 = performance.now(); take.type = type; curTake = take; renderMic(); writeLog(); };
+  take.onData = (blob, type) => { take.type = type; write('.part' + String(take.n++).padStart(5, '0'), blob, type); if (take.n % 3 === 0) writeLog(); };
+  take.onStop = () => { writeLog(); take.chain.then(() => { if (!take.failed) toast('Recording saved (Files → Recordings).'); if ($('#dlgFiles').open) renderTakes(); }); };
+  return take;
 }
+const takeExt = (type) => /mp4/.test(type) ? 'm4a' : /ogg/.test(type) ? 'ogg' : 'webm';
 async function listTakes() {
   try {
     const c = await caches.open(TAKES);
-    const keys = await c.keys();
-    const audio = keys.filter((r) => !r.url.endsWith('.json'));
-    return audio.map((r) => ({ c, req: r, name: decodeURIComponent(r.url.split('/').pop()) })).sort((a, b) => b.name.localeCompare(a.name));
+    const groups = new Map();
+    for (const r of await c.keys()) {
+      const name = decodeURIComponent(r.url.split('/').pop()), base = name.replace(/\.(part\d+|json|webm|m4a|ogg)$/, '');
+      if (!groups.has(base)) groups.set(base, { base, parts: [], log: null });
+      const g = groups.get(base);
+      if (name.endsWith('.json')) g.log = r; else g.parts.push({ r, name });
+    }
+    return [...groups.values()].filter((g) => g.parts.length).map((g) => ({ ...g, c, parts: g.parts.sort((a, b) => a.name.localeCompare(b.name)) }))
+      .sort((a, b) => b.base.localeCompare(a.base));
   } catch (e) { return []; }
 }
 async function renderTakes() {
@@ -1182,29 +1191,31 @@ async function renderTakes() {
   const list = await listTakes();
   el.textContent = '';
   $('#fTakesAll').hidden = !list.length;
-  if (!list.length) { el.innerHTML = '<p class="note">None yet. Turn on Settings → Save recordings, then read as usual.</p>'; return; }
+  if (!list.length) { el.innerHTML = '<p class="note">None yet. Turn on Settings → Save recordings, then read as usual; Start shows “Listening · rec” while it records.</p>'; return; }
   for (const it of list) {
-    const res = await it.c.match(it.req);
-    const size = res ? (await res.clone().blob()).size : 0;
+    let size = 0, type = '';
+    for (const p of it.parts) { const res = await it.c.match(p.r); if (res) { const bl = await res.blob(); size += bl.size; type = type || bl.type; } }
     const row = document.createElement('div'); row.className = 'proj-item';
     const t = document.createElement('div'); t.className = 't';
-    const m = it.name.match(/(\d{4})-(\d\d)-(\d\d)_(\d\d)(\d\d)(\d\d)/);
-    t.textContent = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).toLocaleString() : it.name;
+    const m = it.base.match(/(\d{4})-(\d\d)-(\d\d)_(\d\d)(\d\d)(\d\d)/);
+    t.textContent = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).toLocaleString() : it.base;
     const sm = document.createElement('small'); sm.textContent = (size / 1048576).toFixed(1) + ' MB'; t.appendChild(sm);
     const save = document.createElement('button'); save.className = 'btn'; save.textContent = 'Save';
     save.onclick = async () => {
       save.disabled = true; save.textContent = 'Saving…';
       try {
-        const audio = new Uint8Array(await (await it.c.match(it.req)).arrayBuffer());
-        const jr = await it.c.match(it.req.url.replace(/\.[a-z0-9]+$/, '.json'));
-        const files = [{ name: it.name, data: audio }];
-        if (jr) files.push({ name: it.name.replace(/\.[a-z0-9]+$/, '.json'), data: await jr.text() });
-        download(it.name.replace(/\.[a-z0-9]+$/, '.zip'), writeZip(files), 'application/zip');
+        const blobs = [];
+        for (const p of it.parts) blobs.push(await (await it.c.match(p.r)).blob());
+        const audio = new Uint8Array(await new Blob(blobs).arrayBuffer());
+        const files = [{ name: it.base + '.' + takeExt(type), data: audio }];
+        const jr = it.log && await it.c.match(it.log);
+        if (jr) files.push({ name: it.base + '.json', data: await jr.text() });
+        download(it.base + '.zip', writeZip(files), 'application/zip');
       } catch (e) { toast('Couldn’t save it: ' + e.message); }
       save.disabled = false; save.textContent = 'Save';
     };
     const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
-    del.onclick = async () => { await it.c.delete(it.req); await it.c.delete(it.req.url.replace(/\.[a-z0-9]+$/, '.json')); renderTakes(); };
+    del.onclick = async () => { for (const p of it.parts) await it.c.delete(p.r); if (it.log) await it.c.delete(it.log); renderTakes(); };
     row.append(t, save, del);
     el.appendChild(row);
   }
@@ -1365,6 +1376,7 @@ $('#btnDiag').onclick = async () => {
     `Settings: ${pick.map((k) => k + '=' + settings[k]).join(' ')}`,
     `Script: ${model ? `${model.N} words, ${model.blocks.length} paragraphs, ${model.anchors.length} timestamps` : 'none'} · video: ${hasVideo() ? 'yes' : 'no'}`,
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
+    `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   const btn = $('#btnDiag');

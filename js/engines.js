@@ -128,20 +128,23 @@ export class OnDeviceEngine {
     const { stream, label } = await openMic(opts.micSource);
     this.stream = stream; this.micLabel = label; this.usedNonBuiltin = opts.micSource !== 'builtin' || NOT_BUILTIN.test(label);
     try { await this.startAudio(stream); } catch (e) { this.stop(); throw e; } // never leave the mic open after a failed start
-    if (opts.record) this.startRecording(stream);
+    if (opts.record) this.startRecording(stream, opts.record);
   }
-  // Optional: also save what the mic hears (exactly what the recognizer gets) as one compressed audio file per
-  // listening stretch. The browser's own encoder does the work, so it adds very little load.
-  startRecording(stream) {
+  // Optional: also record what the mic hears (exactly what the recognizer gets). The browser's own encoder does
+  // the work; each 5-second piece is handed over as it's made (rec.onData), so nothing waits for the stop.
+  startRecording(stream, rec) {
+    this.recError = '';
     try {
-      const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
-      const rec = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 64000 } : undefined);
-      const chunks = [];
-      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-      rec.onstop = () => { if (chunks.length && this.cb.recorded) this.cb.recorded(new Blob(chunks, { type: rec.mimeType || type || 'audio/webm' })); };
-      rec.start(5000);
-      this.recorder = rec; this.recStartedAt = performance.now();
-    } catch (e) { this.recorder = null; }
+      if (!window.MediaRecorder) throw new Error('this browser can’t record audio');
+      const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t));
+      const mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 64000 } : undefined);
+      mr.ondataavailable = (e) => { if (e.data && e.data.size) rec.onData(e.data, mr.mimeType || type || 'audio/webm'); };
+      mr.onstop = () => rec.onStop();
+      mr.onerror = (e) => { this.recError = String((e.error && e.error.message) || e.error || 'recorder error'); };
+      mr.start(5000);
+      this.recorder = mr;
+      rec.onStart(mr.mimeType || type || '');
+    } catch (e) { this.recorder = null; this.recError = e.message || String(e); }
   }
   async startAudio(stream) {
     let ctx;

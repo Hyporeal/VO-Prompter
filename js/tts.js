@@ -1,6 +1,10 @@
 // Listen mode: reads sentences aloud with the tablet's voices and reports which word it's on.
 // Word timing comes from the voice when it reports it; otherwise it's estimated from syllables.
 
+// optional debug log (Settings → Debug log); a no-op unless switched on
+export let dbg = () => {};
+export function setDebug(fn) { dbg = fn || (() => {}); }
+
 export function englishVoices() {
   if (!('speechSynthesis' in window)) return [];
   return speechSynthesis.getVoices().filter((v) => /^en([-_]|$)/i.test(v.lang))
@@ -28,7 +32,9 @@ export class Speaker {
       let gotBoundary = false, started = 0, wi = -1;
       const totalSyl = c.syl.reduce((a, b) => a + b, 0) || 1;
       const setWord = (i) => { if (i !== wi && i >= 0 && i < c.words.length) { wi = i; cb.word && cb.word(c.words[i], k); } };
+      dbg('voice', `say #${k} start · ${voice ? voice.name + (voice.localService ? ' (local)' : ' (online)') : 'default ' + u.lang} · rate ${rate}`);
       u.onstart = () => {
+        dbg('voice', `#${k} started`);
         started = performance.now();
         setWord(0);
         clearInterval(this.timer);
@@ -49,8 +55,10 @@ export class Speaker {
         setWord(lo);
       };
       const done = () => { clearInterval(this.timer); if (gen === this.gen) setTimeout(() => next(k + 1), 30); };
-      u.onend = done;
-      u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') done(); };
+      let bounds = 0;
+      u.addEventListener('boundary', () => { if (++bounds === 1) dbg('voice', `#${k} first word boundary`); });
+      u.onend = () => { dbg('voice', `#${k} ended · ${bounds} word boundaries`); done(); };
+      u.onerror = (e) => { dbg('voice', `#${k} error ${e.error}`); if (e.error !== 'interrupted' && e.error !== 'canceled') done(); };
       speechSynthesis.speak(u);
     };
     // Chrome sometimes drops an utterance queued right after cancel()

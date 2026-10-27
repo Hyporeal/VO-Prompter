@@ -373,7 +373,9 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     <fieldset>
       <legend>App</legend>
       <p class="note" id="aboutLine"></p>
-      <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><a class="btn" href="THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Licenses</a></div>
+      <div class="row"><label for="selDebug">Debug log</label><select id="selDebug"><option value="off">Off</option><option value="on">On</option></select>
+        <small>While on, the app notes what voices, video and the speech engine do, with times, so a problem can be traced. Turn it on, reproduce the problem, then Copy debug log and paste it into a message. No script words, file names or account details are logged.</small></div>
+      <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><button class="btn" id="btnDbg" hidden>Copy debug log</button><a class="btn" href="THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Licenses</a></div>
       <p class="note">Diagnostics are app details for troubleshooting (version, settings, device, recent errors). They never include your script's words, file names or video.</p>
       <div class="btns"><button class="btn danger" id="btnWipe">Remove app data…</button></div>
       <p class="note">Removes all scripts, videos, settings and the speech model from this device, then shows how to remove the icon.</p>

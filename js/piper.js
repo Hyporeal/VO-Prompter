@@ -22,6 +22,7 @@ const HF_OLD = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/';
 export const VOICE_CACHE = 'vo-prompter-voices-v1';
 
 // Loads a script once; a failed load is removed so the next attempt really retries.
+import { dbg } from './tts.js';
 const scriptLoads = new Map();
 function loadScript(src) {
   if (scriptLoads.has(src)) return scriptLoads.get(src);
@@ -196,7 +197,8 @@ export class PiperSpeaker {
       const c = pieces[k];
       cb.word && cb.word(c.words[0], c.k); // the guide moves on while the piece is still being prepared
       let res;
-      try { res = await pending[k]; } catch (e) { cb.error && cb.error('The voice couldn’t read that: ' + (e.message || e)); finish(); return; }
+      const w0 = performance.now();
+      try { res = await pending[k]; dbg('natural', `piece ${k + 1}/${pieces.length} (${c.words.length} words) ready · waited ${Math.round(performance.now() - w0)} ms · ${(res.pcm.length / res.sr).toFixed(1)} s audio`); } catch (e) { cb.error && cb.error('The voice couldn’t read that: ' + (e.message || e)); finish(); return; }
       if (gen !== this.gen) return;
       want(k + 2);
       const buf = this.ctx.createBuffer(1, res.pcm.length, res.sr);

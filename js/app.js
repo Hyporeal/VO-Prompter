@@ -1,19 +1,19 @@
 import { fileToParagraphs, textToParagraphs, buildModel, computeTimes, timeAt, unitAtTime, fmtTime, paragraphsToDocx, paragraphsToText } from './parse.js';
 import { Follower, UNREAD } from './follow.js';
 import { OnDeviceEngine, GoogleEngine, modelIsCached } from './engines.js';
-import { Speaker, englishVoices } from './tts.js';
+import { Speaker, englishVoices, setDebug } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.18';
+const VERSION = '1.1.19';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
   textSize: 28, said: 'hl', guide: 'under', span: 'word', overlap: 'some', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
 };
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
@@ -63,7 +63,29 @@ const diag = { errors: [], micRestarts: 0 };
 const noteError = (m) => { diag.errors.push(new Date().toISOString().slice(11, 19) + ' ' + String(m).slice(0, 140)); if (diag.errors.length > 8) diag.errors.shift(); };
 window.addEventListener('error', (e) => noteError(e.message || 'error'));
 window.addEventListener('unhandledrejection', (e) => noteError('promise: ' + ((e.reason && e.reason.message) || e.reason)));
+// Debug log (Settings → Debug log, off by default): timed notes about voices, video, the speech engine and errors,
+// copied with one button to send for troubleshooting. Never your script's words, file names or any account details.
+const dbgLog = [];
+let dbgT0 = performance.now();
+function dbg(kind, msg) {
+  if (!settings.debug) return;
+  dbgLog.push(`${((performance.now() - dbgT0) / 1000).toFixed(2)} ${kind}: ${msg}`);
+  if (dbgLog.length > 3000) dbgLog.splice(0, 500);
+}
+setDebug(dbg);
+window.addEventListener('error', (e) => dbg('error', e.message || 'error'));
+window.addEventListener('unhandledrejection', (e) => dbg('error', 'promise: ' + ((e.reason && e.reason.message) || e.reason)));
 const hasVideo = () => !!video.getAttribute('src');
+{
+  let lastRate = 0;
+  const vinfo = () => `t ${video.currentTime.toFixed(2)} ready ${video.readyState} net ${video.networkState}${video.paused ? ' paused' : ''}`;
+  for (const ev of ['loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'pause', 'waiting', 'stalled', 'suspend', 'seeking', 'seeked', 'ended', 'emptied', 'abort']) {
+    video.addEventListener(ev, () => dbg('video', `${ev} · ${vinfo()}${ev === 'loadedmetadata' ? ` · ${video.videoWidth}x${video.videoHeight} ${video.duration.toFixed(0)} s` : ''}`));
+  }
+  video.addEventListener('error', () => dbg('video', `error ${video.error ? video.error.code + ' ' + (video.error.message || '') : ''} · ${vinfo()}`));
+  video.addEventListener('ratechange', () => { const r = video.playbackRate; if (Math.abs(r - lastRate) > 0.25) { lastRate = r; dbg('video', `speed ×${r.toFixed(2)}`); } });
+  video.addEventListener('timeupdate', () => { const q = video.getVideoPlaybackQuality && video.getVideoPlaybackQuality(); if (q && settings.debug && Math.random() < 0.05) dbg('video', `frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames} · ${vinfo()}`); });
+}
 const newId = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 class RateTracker {
@@ -497,10 +519,10 @@ function onFollow(e) {
 function engineFor(kind) {
   if (!engines[kind]) {
     const cb = {
-      partial: (t) => { follower.input(t, false); logTake(t, 0); },
-      final: (t) => { follower.input(t, true); logTake(t, 1); },
+      partial: (t) => { follower.input(t, false); logTake(t, 0); if (settings.debug) dbg('heard', `partial ${t.split(' ').length} words → spot ${follower.pos}`); },
+      final: (t) => { follower.input(t, true); logTake(t, 1); if (settings.debug) dbg('heard', `final ${t ? t.split(' ').length : 0} words → spot ${follower.pos}`); },
       level: (rms) => { const v = Math.min(1, Math.sqrt(rms) * 3.2); $('#micDot').style.transform = `scale(${1 + v * 0.9})`; },
-      error: (msg) => { toast(msg, 5000); stopListening(); },
+      error: (msg) => { dbg('mic', 'error ' + msg); toast(msg, 5000); stopListening(); },
       dropped: () => micDropped(),
     };
     engines[kind] = kind === 'google' ? new GoogleEngine(cb) : new OnDeviceEngine(cb);
@@ -569,6 +591,7 @@ async function startListening() {
   if (gen !== startGen) { eng.stop(); return; } // stopped or paused while starting
   engine = eng;
   micBusy = false; listening = true;
+  dbg('mic', `listening · ${eng.name}${eng.micLabel ? ' · mic ' + eng.micLabel : ''}`);
   if (settings.saveTakes && !eng.recorder) toast(settings.engine === 'google' ? 'Recordings work with the on-device engine only.' : 'Recording didn’t start: ' + (eng.recError || 'not supported here') + '. Listening works as usual.', 6000);
   follower.commit(); follower.anchor = follower.pos; follower.segSkip = 0; follower.segLen = 0;
   setFollow(true);
@@ -590,6 +613,7 @@ function micDropped() {
 
 function stopListening() {
   startGen++;
+  if (listening) dbg('mic', 'stopped');
   curTake = null;
   if (engine) engine.stop();
   const was = listening;
@@ -834,6 +858,7 @@ function stopTTS() {
   tts = null;
   updateClasses(); wantAwake();
 }
+const tokSent = (ti) => (model.tokens[ti] ? model.tokens[ti].sent + 1 : 0);
 function speakFrom(ti) {
   const vc = voiceChoice();
   if (vc.kind === 'android' && !Speaker.supported()) { toast('This browser can’t read text aloud.'); return; }
@@ -865,6 +890,7 @@ function speakFrom(ti) {
   follower.jumpTo(model.tokens[tts.t0].u0, false);
   if (hasVideo()) { setFollow(true); }
   const useVo = settings.useMyVo && voTakes.length;
+  dbg('listen', `read ${items.length} sentence(s) from #${tokSent(ti)} · ${useVo ? 'my voice-over, else ' : ''}${vc.kind === 'piper' ? 'natural ' + vc.voiceId : 'device voice ' + (vc.voiceURI || 'default')} · ×${settings.ttsRate}`);
   const spk = useVo ? speakers.vo : speakers[vc.kind];
   const sopts = useVo ? { takes: voTakes, model, rate: settings.ttsRate, fallback: { speaker: speakers[vc.kind], opts: { ...vc, rate: settings.ttsRate } } } : { ...vc, rate: settings.ttsRate };
   spk.speak(items.map((x) => x.chunk), sopts, ttsCallbacks({
@@ -1545,6 +1571,7 @@ async function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
+  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug;
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
@@ -1566,6 +1593,22 @@ bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
+$('#selDebug').onchange = (e) => {
+  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug;
+  if (settings.debug) {
+    dbgLog.length = 0; dbgT0 = performance.now();
+    dbg('start', `VO Prompter ${VERSION} · ${navigator.userAgent}`);
+    const vs = 'speechSynthesis' in window ? speechSynthesis.getVoices() : [];
+    dbg('voices', `${vs.length} system voices; English: ` + englishVoices().map((v) => `${v.name} [${v.lang}${v.localService ? ', local' : ', online'}${v.default ? ', default' : ''}]`).join('; '));
+  }
+};
+$('#btnDbg').onclick = async () => {
+  const text = (await diagText()) + '\n\nDebug log:\n' + (dbgLog.join('\n') || '(empty)');
+  let ok = true;
+  try { await navigator.clipboard.writeText(text); } catch (e) { ok = false; }
+  $('#btnDbg').textContent = ok ? 'Copied ✓' : 'Couldn’t copy';
+  setTimeout(() => { $('#btnDbg').textContent = 'Copy debug log'; }, 2500);
+};
 for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
   $(id).onchange = (e) => { const v = e.target.value; settings[key] = /^\d+$/.test(v) ? +v : v; saveSettings(); scrollToCurrent(true); };
 }
@@ -1629,7 +1672,7 @@ setFollow(true);
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // ---------- diagnostics ----------
-$('#btnDiag').onclick = async () => {
+async function diagText() {
   const pick = ['textSize', 'said', 'guide', 'span', 'overlap', 'engine', 'micSource', 'marks', 'markStrength', 'linesAbove', 'scrollEvery', 'scrollStyle', 'offNotice', 'ttsUnit', 'ttsRate'];
   const lines = [
     `VO Prompter ${VERSION}`,
@@ -1643,9 +1686,12 @@ $('#btnDiag').onclick = async () => {
     `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
+  return lines.join('\n');
+}
+$('#btnDiag').onclick = async () => {
   const btn = $('#btnDiag');
   let ok = true;
-  try { await navigator.clipboard.writeText(lines.join('\n')); } catch (e) { ok = false; }
+  try { await navigator.clipboard.writeText(await diagText()); } catch (e) { ok = false; }
   btn.textContent = ok ? 'Copied ✓' : 'Couldn’t copy';
   setTimeout(() => { btn.textContent = 'Copy diagnostics'; }, 2500);
 };

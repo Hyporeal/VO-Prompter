@@ -87,6 +87,8 @@ Space starts and stops listening. Up and down arrows (or Page Up/Down) move by s
 
 **Settings → Copy diagnostics** copies app details (version, settings, tablet, recent errors) to paste into a message. It never includes your script's words, file names or video.
 
+**Settings → Debug log** (off by default): while on, the app notes with timings what the voices, the video and the speech engine do. Reproduce the problem, then **Copy debug log** and paste it into a message. It never includes your script's words, file names or any account details.
+
 ## Privacy
 
 Scripts, edits and videos are stored only in the tablet's browser storage. This repository holds generic code only; no scripts or client material.

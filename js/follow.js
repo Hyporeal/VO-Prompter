@@ -263,7 +263,11 @@ export class Follower {
       const a0 = Math.max(0, Math.min(m.N - 1, c - 3));
       const r = align(m.units, a0, tail, { freeLead: true, window: K + 10 });
       if (!r || r.first < 0) continue;
-      const score = r.score - 0.0015 * Math.abs(r.first - this.pos);
+      // Nearby spots are cheap; far jumps need a much stronger match, because phrases repeat in scripts
+      // and a misheard word shouldn't throw the reader to a later copy of the same phrase.
+      const dist = Math.abs(r.first - this.pos), far = dist > 60;
+      const score = r.score - (far ? 2.5 + 0.004 * (dist - 60) : 0.002 * dist);
+      if (far && (r.matches < 5 || r.content < 3)) continue;
       if (r.content >= 2 && r.matches >= 3 && r.trailing <= 1 && (!best || score > best.score)) best = { ...r, score };
     }
     return best && best.score > 1.5 ? best : null;

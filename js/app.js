@@ -5,13 +5,13 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
   textSize: 28, said: 'hl', guide: 'under', span: 'word', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, markStrength: 'faint', textFrac: null, sideFrac: null, lastProject: null,
 };
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
@@ -80,6 +80,9 @@ function applySettings() {
   document.documentElement.style.setProperty('--script-size', settings.textSize + 'px');
   docEl.classList.toggle('said-hl', settings.said === 'hl');
   docEl.classList.toggle('said-dim', settings.said === 'dim');
+  docEl.classList.toggle('said-sent', settings.said === 'sent' || settings.said === 'sent2');
+  const ms = { faint: ['40%', '1.5px'], medium: ['70%', '2px'], strong: ['100%', '2.5px'] }[settings.markStrength] || ['40%', '1.5px'];
+  docEl.style.setProperty('--mark-a', ms[0]); docEl.style.setProperty('--mark-w', ms[1]);
   docEl.classList.toggle('guide-under', settings.guide === 'under');
   docEl.classList.toggle('guide-fill', settings.guide === 'fill');
   docEl.classList.toggle('marks', settings.marks !== 'off');
@@ -221,6 +224,11 @@ function guideRange() {
   }
   return [t0, t1];
 }
+// Sentence dimming: a sentence counts as finished once the reading spot is past its end.
+function sentDone(si) {
+  const S = model.sentences, k = settings.said === 'sent2' ? si + 1 : si;
+  return k < S.length && S[k].u1 <= follower.pos;
+}
 function tokState(t) {
   const { tokens, units } = model;
   const tok = tokens[t];
@@ -245,6 +253,7 @@ function paint() {
   let lo, hi;
   if (dirtyAll) { lo = 0; hi = T - 1; } else { lo = Math.max(0, dirtyLo - 1); hi = Math.min(T - 1, dirtyHi); }
   dirtyAll = false; dirtyLo = Infinity; dirtyHi = -1;
+  const sentMode = settings.said === 'sent' || settings.said === 'sent2';
   if (hi >= lo) {
     let next = tokState(lo);
     for (let t = lo; t <= hi; t++) {
@@ -253,7 +262,8 @@ function paint() {
       const el = tokEls[t];
       if (!el) continue;
       let c = 'w';
-      if (cur.said) c += ' said';
+      if (sentMode) { const si = model.tokens[t].sent; if (si >= 0 && sentDone(si)) c += ' done'; }
+      else if (cur.said) c += ' said';
       if (cur.skip) c += ' skip';
       if (cur.maybe && cur.said) c += ' maybe';
       if (t >= guideA && t <= guideB) c += ' next';
@@ -263,7 +273,7 @@ function paint() {
       const g = gapEls[t];
       if (g) {
         let gc = 'g';
-        if (cur.said && next && next.said) gc += ' said';
+        if (!sentMode && cur.said && next && next.said) gc += ' said';
         if (t >= guideA && t < guideB) gc += ' next';
         if (inTts && t + 1 < tts.t1) gc += ' tts-sent';
         if (gc !== gapCls[t]) { g.className = gc; gapCls[t] = gc; }
@@ -290,14 +300,21 @@ function smoothScrollTo(top) {
   };
   requestAnimationFrame(step);
 }
-// Put el's line one line below the top of the script area, so the previous line stays visible.
+// Scrolling keeps a few lines above the reading line (Settings: lines above) and only moves when the reading
+// line has gone down a set number of lines (Settings: scroll every). It scrolls back up only if the reading line
+// leaves the top of the screen, so small corrections from the recognizer never bounce the page.
 function keepInView(el, force) {
   if (!el) return;
   const sr = scriptEl.getBoundingClientRect(), r = el.getBoundingClientRect();
   const lineH = settings.textSize * 1.5;
-  const want = sr.top + 14 + lineH * 1.1;
-  const delta = r.top - want;
-  if (!force && Math.abs(delta) < lineH * 0.45) return;
+  const top = sr.top + 10;
+  const want = top + lineH * settings.linesAbove;
+  let delta;
+  if (force) delta = r.top - want;
+  else if (r.top < top - 2) delta = r.top - want;
+  else if (r.top - want >= lineH * (settings.scrollEvery - 0.5) || r.bottom > sr.bottom - lineH * 0.3) delta = r.top - want;
+  else return;
+  if (Math.abs(delta) < 2) return;
   if (!force && performance.now() < userScrollUntil) { $('#backPill').hidden = false; return; }
   $('#backPill').hidden = true;
   smoothScrollTo(scriptEl.scrollTop + delta);
@@ -315,14 +332,23 @@ function currentEl() {
 const scrollToCurrent = (force) => keepInView(currentEl(), force);
 
 // ---------- following ----------
-let saveTimer = null;
+let saveTimer = null, jumpScrollTimer = null;
 function onFollow(e) {
   if (!model) return;
   if (e && e.jump) dirtyAll = true;
   else markDirtyUnits(Math.min(follower.anchor, lastFollowPos, follower.pos), Math.max(follower.pos, lastFollowPos) + 1);
+  if (settings.said === 'sent' || settings.said === 'sent2') {
+    const u = Math.min(follower.pos, model.N - 1), si = model.tokens[model.units[u].ti].sent;
+    const s0 = model.sentences[Math.max(0, si - 2)];
+    if (s0) markDirtyTokens(s0.t0, model.units[u].ti + 1);
+  }
   lastFollowPos = follower.pos;
   $('#offScript').hidden = !(listening && follower.off);
-  scrollPending = true;
+  if (e && e.jump && listening) {
+    const at = follower.pos;
+    clearTimeout(jumpScrollTimer);
+    jumpScrollTimer = setTimeout(() => { if (Math.abs(follower.pos - at) < 40) scrollPending = true; }, 700);
+  } else scrollPending = true;
   if (e && e.jump && !listening) seekVideoToPos();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveProject, 1500);
@@ -978,6 +1004,7 @@ async function syncSettingsUI() {
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span;
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
   $('#selMarks').value = settings.marks; $('#selUnit').value = settings.ttsUnit;
+  $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery); $('#selMarkStr').value = settings.markStrength;
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
   $('#engineNote').textContent = settings.engine === 'google'
     ? 'Android speech: Chrome’s speech recognition, which is Google’s. More accurate than the on-tablet engine, but it sends your audio to Google and usually needs internet.'
@@ -991,7 +1018,10 @@ const bindSel = (id, key, after) => { $(id).onchange = (e) => { settings[key] = 
 $('#sText').oninput = (e) => { settings.textSize = +e.target.value; $('#oText').textContent = settings.textSize + ' px'; applySettings(); };
 $('#sText').onchange = () => { saveSettings(); scrollToCurrent(true); };
 bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selTheme', 'theme');
-bindSel('#selMarks', 'marks');
+bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength');
+for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
+  $(id).onchange = (e) => { settings[key] = +e.target.value; saveSettings(); scrollToCurrent(true); };
+}
 bindSel('#selEngine', 'engine', () => { if (listening) { stopListening(); startListening(); } });
 bindSel('#selMic', 'micSource', () => { if (listening) { stopListening(); startListening(); } });
 bindSel('#selUnit', 'ttsUnit'); bindSel('#selVoice', 'ttsVoice');

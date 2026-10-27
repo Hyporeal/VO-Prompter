@@ -105,13 +105,13 @@ button { cursor: pointer; }
 .g { border-radius: 0; }
 /* what's been read */
 .said-hl .w.said, .said-hl .g.said { background-color: var(--said-bg); }
-.said-dim .w.said { color: var(--said-dim); }
+.said-dim .w.said, .said-sent .w.done { color: var(--said-dim); }
 /* what to read next */
 .guide-fill .w.next { color: var(--guide); }
 .guide-under .w.next, .guide-under .g.next { background-image: linear-gradient(var(--guide), var(--guide)); background-position: left bottom; background-size: 100% 3px; background-repeat: no-repeat; }
 /* mistakes */
-.marks .w.skip { text-decoration: underline wavy var(--over); text-decoration-thickness: 2px; text-underline-offset: 6px; text-decoration-skip-ink: none; }
-.marks-all .w.maybe { text-decoration: underline dotted var(--close); text-decoration-thickness: 3px; text-underline-offset: 6px; }
+.marks .w.skip { text-decoration: underline wavy color-mix(in srgb, var(--over) var(--mark-a, 40%), transparent); text-decoration-thickness: var(--mark-w, 1.5px); text-underline-offset: 6px; text-decoration-skip-ink: none; }
+.marks-all .w.maybe { text-decoration: underline dotted color-mix(in srgb, var(--close) var(--mark-a, 40%), transparent); text-decoration-thickness: calc(var(--mark-w, 1.5px) + 1px); text-underline-offset: 6px; }
 /* listen mode */
 .w.tts-sent, .g.tts-sent { background-color: var(--tts-bg); }
 .w.tts-word { color: var(--guide); text-decoration: underline; text-decoration-color: var(--guide); text-decoration-thickness: 3px; text-underline-offset: 6px; }
@@ -266,9 +266,12 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
       <legend>Text</legend>
       <div class="row"><label for="sText">Text size</label><output id="oText"></output><input type="range" id="sText" min="10" max="56" step="1"></div>
       <div class="size-preview">The quick brown fox jumps over the lazy dog.</div>
-      <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="hl">Highlight</option><option value="dim">Dim</option><option value="off">No change</option></select></div>
+      <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="hl">Highlight word by word</option><option value="dim">Dim word by word</option><option value="sent">Dim each sentence when finished</option><option value="sent2">Dim a sentence after the next one</option><option value="off">No change</option></select></div>
       <div class="row"><label for="selGuide">Guide style</label><select id="selGuide"><option value="under">Underline</option><option value="fill">Fill the letters</option></select></div>
       <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="off">Off</option><option value="word">Next word</option><option value="phrase">Next phrase</option><option value="line">Whole line</option><option value="sentence">Whole sentence</option><option value="para">Whole paragraph</option></select></div>
+      <div class="row"><label for="selAbove">Lines kept above</label><select id="selAbove"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select></div>
+      <div class="row"><label for="selEvery">Scroll every</label><select id="selEvery"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option><option value="5">5 lines</option></select>
+        <small>The page waits until you've read this many lines, then moves them up in one smooth step.</small></div>
       <div class="row"><label for="selTheme">Theme</label><select id="selTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">Match the tablet</option></select></div>
     </fieldset>
     <fieldset>
@@ -279,6 +282,7 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
         <small>The tablet mic keeps Bluetooth earbuds out of phone-call mode. Applies to the on-tablet engine.</small></div>
       <div class="row"><label for="selMarks">Mistake marks</label><select id="selMarks"><option value="skips">Skipped words</option><option value="all">Skips + possible misreads</option><option value="off">Off</option></select>
         <small>Skipped words get a red wavy line. Possible misreads (dotted) are often the recognizer's mistake, not yours.</small></div>
+      <div class="row"><label for="selMarkStr">Mark strength</label><select id="selMarkStr"><option value="faint">Faint</option><option value="medium">Medium</option><option value="strong">Strong</option></select></div>
     </fieldset>
     <fieldset>
       <legend>Listen mode</legend>

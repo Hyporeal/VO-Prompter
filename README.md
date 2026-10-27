@@ -35,6 +35,10 @@ Without timestamps, the video is spread evenly across the whole script.
 ## Settings
 
 - **Text size**: 10 to 56 px.
+- **Words you've read**: highlight or dim word by word, dim each sentence when finished, dim a sentence only after the next one is finished, or no change.
+- **Lines kept above**: how many lines stay visible above the reading line (default 3), so you can glance back.
+- **Scroll every**: the page waits until you've read this many lines, then moves up in one smooth step (default 2). It only scrolls back up if the reading line leaves the top of the screen.
+- **Mark strength**: faint (default), medium or strong for skipped-word and misread marks.
 - **Guide style**: underline or fill the letters.
 - **Guide covers**: off, next word, next phrase, whole line (the line on screen), whole sentence, or whole paragraph. While you read, the guide runs slightly ahead of the last recognized word to make up for the recognizer's delay.
 

@@ -37,7 +37,7 @@ Without timestamps, the video is spread evenly across the whole script.
 - **Text size**: 10 to 56 px.
 - **Words you've read**: highlight or dim word by word, dim each sentence when finished, dim a sentence only after the next one is finished, or no change.
 - **Lines kept above**: how many lines stay visible above the reading line (1 to 12, default 3), so you can glance back.
-- **Scroll every**: the page waits until you've read this many lines, then moves up in one smooth step (default 2). It only scrolls back up if the reading line leaves the top of the screen.
+- **Scroll every**: 1 to 5 lines, or 1 to 3 sentences (default 2 lines). With sentences, when you reach the next one it moves to your reading position, keeping the sentence you're reading (and the next, if there's room) in view; a sentence too long to fit still scrolls before you run out of room. It only scrolls back up if the reading line leaves the top of the screen.
 - **Scroll style**: at a pause in your reading (default: moves only in a break between words, unless you run out of room), right away, or slow and steady (drifts up gently). The page follows a reading spot that has held for a moment, so a spot that flickers ahead never moves it.
 - **Video speed label**: off by default.
 - Read words, highlights and the guide fade in and out instead of switching instantly.

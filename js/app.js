@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.6';
+const VERSION = '1.1.7';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -334,13 +334,13 @@ function currentEl() {
 }
 const scrollToCurrent = (force) => { if (force) syncStable(); keepInView(currentEl(), force); };
 // Start, taps and arrow keys move the page straight to the reading spot, in every scroll style.
-function syncStable() { stable.pos = stable.cand = follower.pos; stable.t = performance.now(); }
+function syncStable() { stable.pos = stable.cand = follower.pos; stable.t = performance.now(); scrollSent = -1; }
 
 // While reading (or in Listen mode), the page follows a reading spot that has held for a moment, so a spot that
 // jumps ahead and back never moves the page. Styles: 'pause' waits for a break in your speech before moving
 // (unless the line runs out of room), 'step' moves right away, 'slow' drifts up gently and continuously.
 const stable = { pos: 0, cand: -1, t: 0 };
-let lastScrollT = 0, slowAcc = 0;
+let lastScrollT = 0, slowAcc = 0, scrollSent = -1;
 function autoScroll() {
   const now = performance.now();
   const dt = Math.min(0.1, (now - (lastScrollT || now)) / 1000); lastScrollT = now;
@@ -358,17 +358,33 @@ function autoScroll() {
   if (now < userScrollUntil) { if (aboveTop || r.top > sr.bottom) $('#backPill').hidden = false; return; }
   $('#backPill').hidden = true;
   if (aboveTop) { if (!anim) smoothScrollTo(scriptEl.scrollTop + (r.top - want), 450); return; }
-  if (settings.scrollStyle === 'slow') {
-    if (below <= 1 || anim) { slowAcc = 0; return; }
-    if (below > lineH * 5) { slowAcc = 0; smoothScrollTo(scriptEl.scrollTop + below, 350); return; } // far away: go there
-    const speed = Math.min(lineH * 1.6, Math.max(lineH * 0.35, below * 0.7)) * (roomOut ? 3 : 1);
+  const slow = settings.scrollStyle === 'slow';
+  // Scroll every N sentences: when you reach the Nth new sentence, its first line moves to the reading position,
+  // which keeps the sentence you're reading (and the next, if there's room) in view. A sentence too long to fit
+  // still scrolls line by line before you run out of room.
+  const sentN = /^s\d$/.test(String(settings.scrollEvery)) ? +String(settings.scrollEvery).slice(1) : 0;
+  let move = below, due;
+  if (sentN && !(tts && tts.cur >= 0)) {
+    const si = model.tokens[model.units[Math.min(stable.pos, model.N - 1)].ti].sent;
+    if (si >= 0) {
+      if (scrollSent < 0 || si < scrollSent || si - scrollSent >= sentN) scrollSent = si;
+      const sEl = tokEls[model.sentences[scrollSent].t0];
+      move = Math.min(below, (sEl ? sEl.getBoundingClientRect().top : r.top) - want);
+    }
+    due = move > (slow ? 1 : lineH * 0.5);
+    if (roomOut) { move = below; due = true; }
+  } else due = slow ? below > 1 : (below >= lineH * (settings.scrollEvery - 0.5) || roomOut);
+  if (slow) {
+    if (!due || anim) { slowAcc = 0; return; }
+    if (move > lineH * 5) { slowAcc = 0; smoothScrollTo(scriptEl.scrollTop + move, 350); return; } // far away: go there
+    const speed = Math.min(lineH * 1.6, Math.max(lineH * 0.35, move * 0.7)) * (roomOut ? 3 : 1);
     slowAcc += speed * dt;
-    if (slowAcc >= 1) { const step = Math.floor(slowAcc); slowAcc -= step; scriptEl.scrollTop += Math.min(step, below); }
+    if (slowAcc >= 1) { const step = Math.floor(slowAcc); slowAcc -= step; scriptEl.scrollTop += Math.min(step, move); }
     return;
   }
-  if (anim || (below < lineH * (settings.scrollEvery - 0.5) && !roomOut)) return;
+  if (anim || !due) return;
   if (settings.scrollStyle === 'pause' && !roomOut && now - lastWord < 450) return;
-  smoothScrollTo(scriptEl.scrollTop + below, settings.scrollStyle === 'pause' ? 450 : 300);
+  smoothScrollTo(scriptEl.scrollTop + move, settings.scrollStyle === 'pause' ? 450 : 300);
 }
 
 // ---------- following ----------
@@ -1087,7 +1103,7 @@ bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
-  $(id).onchange = (e) => { settings[key] = +e.target.value; saveSettings(); scrollToCurrent(true); };
+  $(id).onchange = (e) => { const v = e.target.value; settings[key] = /^\d+$/.test(v) ? +v : v; saveSettings(); scrollToCurrent(true); };
 }
 bindSel('#selEngine', 'engine', () => { if (listening) { stopListening(); startListening(); } });
 bindSel('#selMic', 'micSource', () => { if (listening) { stopListening(); startListening(); } });

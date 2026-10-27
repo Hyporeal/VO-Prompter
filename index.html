@@ -105,16 +105,16 @@ button { cursor: pointer; }
 .para .edited-dot { display: inline-block; width: .32em; height: .32em; border-radius: 50%; background: var(--accent); margin-left: .3em; vertical-align: .25em; }
 .w { border-radius: 4px; cursor: pointer; --txt: var(--fg); --guide: var(--accent);
   transition: color .35s ease, background-color .6s ease, box-shadow .3s ease, text-decoration-color .8s ease; }
-.g { border-radius: 0; transition: background-color .6s ease, box-shadow .3s ease; }
+.g { border-radius: 0; transition: color .35s ease, background-color .6s ease, box-shadow .3s ease; }
 /* calm: things that change while you read fade instead of flashing */
 .said-hl .w.said, .said-hl .g.said { transition: background-color 1.4s ease; }
-.said-dim .w.said, .said-sent .w.done { transition: color 1.6s ease; }
+.said-dim .w.said, .said-sent .w.done, .said-dim .g.said, .said-sent .g.done { transition: color 1.6s ease; }
 @media (prefers-reduced-motion: reduce) { .w, .g { transition: none !important; } }
 /* what's been read */
 .said-hl .w.said, .said-hl .g.said { background-color: var(--said-bg); }
-.said-dim .w.said, .said-sent .w.done { color: var(--said-dim); }
+.said-dim .w.said, .said-sent .w.done, .said-dim .g.said, .said-sent .g.done { color: var(--said-dim); }
 /* what to read next */
-.guide-fill .w.next { color: var(--guide); }
+.guide-fill .w.next, .guide-fill .g.next { color: var(--guide); }
 .guide-under .w.next, .guide-under .g.next { box-shadow: inset 0 -3px 0 var(--guide); }
 /* mistakes */
 .marks .w.skip { text-decoration: underline wavy color-mix(in srgb, var(--over) var(--mark-a, 40%), transparent); text-decoration-thickness: var(--mark-w, 1.5px); text-underline-offset: 6px; text-decoration-skip-ink: none; }

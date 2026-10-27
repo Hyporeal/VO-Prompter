@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.8';
+const VERSION = '1.1.9';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -66,13 +66,24 @@ class RateTracker {
   }
 }
 
-async function keepAwake(on) {
+// Keeps the screen on while listening, reading aloud or playing video. One request at a time, so a release and a
+// new request can't cross; if the system drops the lock, it's asked for again.
+let wakeWanted = false, wakeBusy = false;
+async function syncWake() {
+  if (wakeBusy || !('wakeLock' in navigator)) return;
+  wakeBusy = true;
   try {
-    if (on && !wakeLock && 'wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); }
-    else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
-  } catch (e) { /* not allowed right now */ }
+    for (;;) {
+      if (wakeWanted && !wakeLock && !document.hidden) {
+        const l = await navigator.wakeLock.request('screen');
+        wakeLock = l; l.addEventListener('release', () => { if (wakeLock === l) wakeLock = null; });
+      } else if (!wakeWanted && wakeLock) { const l = wakeLock; wakeLock = null; await l.release(); }
+      else break;
+    }
+  } catch (e) { /* not allowed right now; tried again shortly */ }
+  finally { wakeBusy = false; }
 }
-const wantAwake = () => keepAwake(listening || ttsBusy() || (hasVideo() && !video.paused));
+const wantAwake = () => { wakeWanted = listening || ttsBusy() || (hasVideo() && !video.paused) || (hasVideo() && follow && (listening || !!tts)); syncWake(); };
 
 // ---------- settings → page ----------
 function applySettings() {
@@ -179,17 +190,24 @@ function markDirtyUnits(u0, u1) {
 // While listening, the guide runs slightly ahead of the last recognized word by the recognizer's usual delay,
 // so it sits on the word you're saying rather than the one you just finished. It never crosses a sentence end.
 function guideUnit() {
-  const u = follower.pos;
-  if (!listening) return u;
+  const u = Math.min(shown.pos, model.N - 1);
+  if (!listening) { gHold.pos = u; gHold.base = u; return u; }
+  let p = u;
   const r = follower.rate();
   const since = performance.now() / 1000 - r.lastT;
-  if (r.rate <= 0 || since > 0.9) return u;
-  const lead = Math.min(3, r.rate * (LAG[settings.engine] || 0.4));
-  let p = u + Math.floor(lead + 0.35);
-  const sent = model.sentences[model.tokens[model.units[u].ti].sent];
-  if (sent) p = Math.min(p, sent.u1 - 1);
-  return Math.max(u, Math.min(model.N - 1, p));
+  if (r.rate > 0 && since < 0.9) {
+    const lead = Math.min(1.2, r.rate * (LAG[settings.engine] || 0.4));
+    p = u + Math.floor(lead + 0.35);
+    const sent = model.sentences[model.tokens[model.units[u].ti].sent];
+    if (sent) p = Math.min(p, sent.u1 - 1);
+  }
+  p = Math.max(u, Math.min(model.N - 1, p));
+  // never step back just because you paused; only when the shown spot itself moves back
+  if (u < gHold.base) gHold.pos = p; else gHold.pos = Math.max(gHold.pos, p);
+  gHold.base = u;
+  return gHold.pos;
 }
+const gHold = { pos: 0, base: 0 };
 // The words on the same screen line as token t (depends on text size and wrapping). Cached per token and layout.
 let lineMemo = { t: -1, key: '', range: [-1, -1] };
 function lineRange(t) {
@@ -239,7 +257,7 @@ function tokState(t) {
   let said = tok.spoken, skip = false, maybe = false;
   for (let u = tok.u0; u < tok.u1; u++) {
     const st = follower.eff(u);
-    if (st === UNREAD) said = false;
+    if (st === UNREAD || u >= shown.pos) said = false;
     else if (st === 2) { said = false; if (confirmed && !units[u].soft && follower.status[u] === 2) skip = true; }
     else if (st === 3 && confirmed && follower.status[u] === 3) maybe = true;
   }
@@ -277,7 +295,8 @@ function paint() {
       const g = gapEls[t];
       if (g) {
         let gc = 'g';
-        if (!sentMode && cur.said && next && next.said) gc += ' said';
+        if (sentMode) { const si = model.tokens[t].sent; if (si >= 0 && sentDone(si)) gc += ' done'; }
+        else if (cur.said && next && next.said) gc += ' said';
         if (t >= guideA && t < guideB) gc += ' next';
         if (inTts && t + 1 < tts.t1) gc += ' tts-sent';
         if (gc !== gapCls[t]) { g.className = gc; gapCls[t] = gc; }
@@ -334,7 +353,25 @@ function currentEl() {
 }
 const scrollToCurrent = (force) => { if (force) syncStable(); keepInView(currentEl(), force); };
 // Start, taps and arrow keys move the page straight to the reading spot, in every scroll style.
-function syncStable() { stable.pos = stable.cand = follower.pos; stable.t = performance.now(); scrollSent = -1; }
+function syncStable() { stable.pos = stable.cand = follower.pos; stable.t = performance.now(); scrollSent = -1; shown.pos = follower.pos; shown.fwdCand = -1; shown.backT = 0; }
+// The shown reading spot (guide and read highlight): small steps forward follow at once, bigger jumps must hold
+// for 350 ms, and it moves back only after 700 ms, so the guide picks a place and stays there.
+const shown = { pos: 0, fwdCand: -1, fwdT: 0, backT: 0 };
+function updateShown() {
+  const now = performance.now(), p = follower.pos || 0, prev = shown.pos || 0;
+  if (!listening || !model) { shown.pos = p; shown.fwdCand = -1; shown.backT = 0; }
+  else if (p >= shown.pos) {
+    shown.backT = 0;
+    if (p - shown.pos <= 6) { shown.pos = p; shown.fwdCand = -1; }
+    else if (shown.fwdCand < 0 || Math.abs(p - shown.fwdCand) > 3) { shown.fwdCand = p; shown.fwdT = now; }
+    else if (now - shown.fwdT > 350) { shown.pos = p; shown.fwdCand = -1; }
+  } else {
+    shown.fwdCand = -1;
+    if (!shown.backT) shown.backT = now;
+    else if (now - shown.backT > 700) { shown.pos = p; shown.backT = 0; }
+  }
+  if (shown.pos !== prev && model && model.N) markDirtyUnits(Math.min(prev, shown.pos) - 1, Math.max(prev, shown.pos) + 1);
+}
 
 // While reading (or in Listen mode), the page follows a reading spot that has held for a moment, so a spot that
 // jumps ahead and back never moves the page. Styles: 'pause' waits for a break in your speech before moving
@@ -592,8 +629,11 @@ function updateStable() {
     markDirtyUnits(s0 ? s0.u0 : a, b + 1);
   }
 }
+let wakeCheck = 0;
 function tick() {
   requestAnimationFrame(tick);
+  if (performance.now() - wakeCheck > 2000) { wakeCheck = performance.now(); if (wakeWanted && !wakeLock) syncWake(); }
+  updateShown();
   updateStable();
   paint();
   updateOffChip();

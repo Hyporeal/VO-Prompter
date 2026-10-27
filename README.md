@@ -61,7 +61,7 @@ The mic pauses while Settings or Files is open, when the app loses focus, or whe
 
 ## Mistake marks
 
-- **Skipped words** get a red wavy underline.
+- **Skipped words** get a red wavy underline, shown only once the sentence is confirmed finished, so marks don't flicker while you're still reading it.
 - **Possible misreads** (optional) get a dotted underline. These are often the recognizer mishearing, not you.
 - **Off-script notice** (off by default): a dim tag that appears after you've been off script for a moment. Either way, it finds you again when you're back on a line from the script, or if you jump back or ahead.
 - Stray words (a cough, someone in the room, a misheard "the") don't move the reading spot; it only moves forward on a content word or two matching words in a row.

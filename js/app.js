@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.3';
+const VERSION = '1.1.4';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -166,7 +166,7 @@ function renderDoc() {
 // Class changes are batched into one paint per frame (from the tick loop), and only words that could have
 // changed are touched. updateClasses() asks for a full repaint.
 let dirtyLo = Infinity, dirtyHi = -1, dirtyAll = false;
-let guideA = -1, guideB = -1, lastFollowPos = 0;
+let guideA = -1, guideB = -1, lastFollowPos = 0, lastAnchor = 0;
 let blockByPid = new Map();
 const LAG = { device: 0.4, google: 0.7 }; // typical seconds between saying a word and the recognizer reporting it
 function updateClasses() { dirtyAll = true; }
@@ -229,15 +229,19 @@ function sentDone(si) {
   const S = model.sentences, k = settings.said === 'sent2' ? si + 1 : si;
   return k < S.length && S[k].u1 <= follower.pos;
 }
+// Missed-word and misread marks show only once their sentence is confirmed finished (the recognizer has
+// committed past its end), so marks never flicker while you're still reading the sentence.
 function tokState(t) {
   const { tokens, units } = model;
   const tok = tokens[t];
+  const sent = tok.sent >= 0 ? model.sentences[tok.sent] : null;
+  const confirmed = !!sent && sent.u1 <= follower.anchor;
   let said = tok.spoken, skip = false, maybe = false;
   for (let u = tok.u0; u < tok.u1; u++) {
     const st = follower.eff(u);
     if (st === UNREAD) said = false;
-    else if (st === 2) { if (!units[u].soft) { skip = true; said = false; } }
-    else if (st === 3) maybe = true;
+    else if (st === 2) { said = false; if (confirmed && !units[u].soft && follower.status[u] === 2) skip = true; }
+    else if (st === 3 && confirmed && follower.status[u] === 3) maybe = true;
   }
   return { said, skip, maybe };
 }
@@ -328,7 +332,9 @@ function currentEl() {
   const p = Math.min(follower.pos, model.N - 1);
   return p >= 0 ? tokEls[model.units[p].ti] : null;
 }
-const scrollToCurrent = (force) => keepInView(currentEl(), force);
+const scrollToCurrent = (force) => { if (force) syncStable(); keepInView(currentEl(), force); };
+// Start, taps and arrow keys move the page straight to the reading spot, in every scroll style.
+function syncStable() { stable.pos = stable.cand = follower.pos; stable.t = performance.now(); }
 
 // While reading (or in Listen mode), the page follows a reading spot that has held for a moment, so a spot that
 // jumps ahead and back never moves the page. Styles: 'pause' waits for a break in your speech before moving
@@ -356,6 +362,7 @@ function autoScroll() {
   if (aboveTop) { if (!anim) smoothScrollTo(scriptEl.scrollTop + (r.top - want), 450); return; }
   if (settings.scrollStyle === 'slow') {
     if (below <= 1 || anim) { slowAcc = 0; return; }
+    if (below > lineH * 5) { slowAcc = 0; smoothScrollTo(scriptEl.scrollTop + below, 350); return; } // far away: go there
     const speed = Math.min(lineH * 1.6, Math.max(lineH * 0.35, below * 0.7)) * (roomOut ? 3 : 1);
     slowAcc += speed * dt;
     if (slowAcc >= 1) { const step = Math.floor(slowAcc); slowAcc -= step; scriptEl.scrollTop += Math.min(step, below); }
@@ -371,7 +378,12 @@ let saveTimer = null;
 function onFollow(e) {
   if (!model) return;
   if (e && e.jump) dirtyAll = true;
-  else markDirtyUnits(Math.min(follower.anchor, lastFollowPos, follower.pos), Math.max(follower.pos, lastFollowPos) + 1);
+  else {
+    const lo = Math.min(follower.anchor, lastAnchor, lastFollowPos, follower.pos);
+    const sl = model.sentences[model.tokens[model.units[Math.min(lo, model.N - 1)].ti].sent];
+    markDirtyUnits(sl ? Math.min(lo, sl.u0) : lo, Math.max(follower.pos, lastFollowPos) + 1);
+  }
+  lastAnchor = follower.anchor;
   if (settings.said === 'sent' || settings.said === 'sent2') {
     const u = Math.min(follower.pos, model.N - 1), si = model.tokens[model.units[u].ti].sent;
     const s0 = model.sentences[Math.max(0, si - 2)];
@@ -462,7 +474,7 @@ function stopListening() {
   if (engine) engine.stop();
   const was = listening;
   listening = false; micBusy = false;
-  follower.commit(); follower.off = false;
+  follower.commit(); follower.off = false; follower.anchor = follower.pos;
   renderMic(); wantAwake();
   if (was) { updateClasses(); saveProject(); }
 }

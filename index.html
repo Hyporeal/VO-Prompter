@@ -66,6 +66,7 @@ button { cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); font-weight: 700; }
 .btn { border: 1px solid var(--rule); background: var(--surface-2); border-radius: 9px; padding: 9px 14px; flex-shrink: 0; }
 .btn:disabled { opacity: .45; cursor: default; }
+a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 .btn.danger { color: var(--over); }
 .chip { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; padding: 5px 9px; border-radius: 7px; flex-shrink: 0; }
@@ -277,6 +278,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
       <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="hl">Highlight word by word</option><option value="dim">Dim word by word</option><option value="sent">Dim each sentence when finished</option><option value="sent2">Dim a sentence after the next one</option><option value="off">No change</option></select></div>
       <div class="row"><label for="selGuide">Guide style</label><select id="selGuide"><option value="under">Underline</option><option value="fill">Fill the letters</option></select></div>
       <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="off">Off</option><option value="word">Next word</option><option value="phrase">Next phrase</option><option value="line">Whole line</option><option value="sentence">Whole sentence</option><option value="para">Whole paragraph</option></select></div>
+      <div class="row"><label for="selOverlap">Guide overlap</label><select id="selOverlap"><option value="none">None</option><option value="some">A little</option><option value="more">More</option></select>
+        <small>The app hears each word about half a second after you say it. With overlap, the guide also covers the word it just heard and the next few, so the word you're saying stays inside it. Try More if you still read past it; None is a single exact spot.</small></div>
       <div class="row"><label for="selAbove">Lines kept above</label><select id="selAbove"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select></div>
       <div class="row"><label for="selEvery">Scroll every</label><select id="selEvery"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option><option value="5">5 lines</option><option value="s1">1 sentence</option><option value="s2">2 sentences</option><option value="s3">3 sentences</option></select>
         <small>The page waits until you've read this many lines or sentences before it moves. With sentences, the new sentence moves to your reading position; a sentence too long to fit still scrolls before you run out of room.</small></div>
@@ -307,6 +310,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     <fieldset>
       <legend>App</legend>
       <p class="note" id="aboutLine"></p>
+      <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><a class="btn" href="THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Licenses</a></div>
+      <p class="note">Diagnostics are app details for troubleshooting (version, settings, tablet, recent errors). They never include your script's words, file names or video.</p>
       <div class="btns"><button class="btn danger" id="btnWipe">Remove app data…</button></div>
       <p class="note">Removes all scripts, videos, settings and the speech model from this tablet, then shows how to remove the icon.</p>
     </fieldset>

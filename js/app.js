@@ -5,11 +5,11 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.11';
+const VERSION = '1.1.12';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
-  textSize: 28, said: 'hl', guide: 'under', span: 'word', theme: 'dark',
+  textSize: 28, said: 'hl', guide: 'under', span: 'word', overlap: 'some', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
   ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, textFrac: null, sideFrac: null, lastProject: null,
 };
@@ -51,6 +51,11 @@ function toast(msg, ms = 3200) {
   $('#notices').appendChild(t);
   setTimeout(() => t.remove(), ms);
 }
+// Recent app errors and mic restarts, for Settings → Copy diagnostics. Nothing from the script or file names.
+const diag = { errors: [], micRestarts: 0 };
+const noteError = (m) => { diag.errors.push(new Date().toISOString().slice(11, 19) + ' ' + String(m).slice(0, 140)); if (diag.errors.length > 8) diag.errors.shift(); };
+window.addEventListener('error', (e) => noteError(e.message || 'error'));
+window.addEventListener('unhandledrejection', (e) => noteError('promise: ' + ((e.reason && e.reason.message) || e.reason)));
 const hasVideo = () => !!video.getAttribute('src');
 const newId = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -167,7 +172,7 @@ function renderDoc() {
     frag.appendChild(add);
   }
   docEl.appendChild(frag);
-  guideA = guideB = -1; lastFollowPos = follower.pos; lineMemo.t = -1;
+  guideA = guideB = -1; lastFollowPos = follower.pos; lineMemo.slots = [];
   blockByPid = new Map(model.blocks.map((b) => [b.pid, b]));
   updateClasses();
   paint();
@@ -208,11 +213,14 @@ function guideUnit() {
   return gHold.pos;
 }
 const gHold = { pos: 0, base: 0 };
-// The words on the same screen line as token t (depends on text size and wrapping). Cached per token and layout.
-let lineMemo = { t: -1, key: '', range: [-1, -1] };
+// The words on the same screen line as token t (depends on text size and wrapping). The last two lookups are
+// kept, so the guide's two ends cost nothing while they stay put.
+let lineMemo = { key: '', slots: [] };
 function lineRange(t) {
   const key = settings.textSize + 'x' + scriptEl.clientWidth;
-  if (lineMemo.t === t && lineMemo.key === key) return lineMemo.range;
+  if (lineMemo.key !== key) lineMemo = { key, slots: [] };
+  const hit = lineMemo.slots.find((s) => s.t === t);
+  if (hit) return hit.range;
   const { tokens } = model;
   const el = tokEls[t];
   if (!el) return [t, t];
@@ -220,27 +228,42 @@ function lineRange(t) {
   let a = t, b = t;
   while (a > 0 && tokens[a - 1].pid === pid && tokEls[a - 1] && Math.abs(tokEls[a - 1].offsetTop - top) < tol) a--;
   while (b < tokens.length - 1 && tokens[b + 1].pid === pid && tokEls[b + 1] && Math.abs(tokEls[b + 1].offsetTop - top) < tol) b++;
-  lineMemo = { t, key, range: [a, b] };
-  return lineMemo.range;
+  lineMemo.slots = [{ t, range: [a, b] }, ...lineMemo.slots].slice(0, 2);
+  return [a, b];
 }
+// Guide overlap. The recognizer reports each word about half a second after you say it, so while you're
+// reading, the guide also covers the word it just heard and the next few: the word you're saying stays inside
+// it. Line, sentence and paragraph guides take in the next one as you reach the last words of the current one.
+// "None" is the exact single spot (with a small lead), as before.
+const OVERLAP = { some: { back: 1, fwd: 3, next: 2 }, more: { back: 2, fwd: 5, next: 3 } };
 function guideRange() {
   if (mode !== 'read' || settings.span === 'off' || !model || follower.pos >= model.N) return [-1, -1];
   const { tokens, units } = model;
-  let t0 = units[guideUnit()].ti;
-  let t1 = t0;
-  if (settings.span === 'phrase') {
-    let n = 0;
-    while (t1 < tokens.length - 1 && n < 5 && !tokens[t1].endsPhrase && tokens[t1 + 1].pid === tokens[t0].pid) { t1++; n++; }
-  } else if (settings.span === 'line') {
-    [t0, t1] = lineRange(t0);
-  } else if (settings.span === 'sentence') {
-    const s = model.sentences[tokens[t0].sent];
-    if (s) { t0 = s.t0; t1 = s.t1 - 1; }
-  } else if (settings.span === 'para') {
-    const b = blockByPid.get(tokens[t0].pid);
-    if (b) { t0 = b.t0; t1 = b.t1 - 1; }
+  const T = tokens.length, span = settings.span, ov = OVERLAP[settings.overlap];
+  const byWord = span === 'word' || span === 'phrase';
+  let c, a, b;
+  if (!ov) { c = a = b = units[guideUnit()].ti; }
+  else {
+    c = units[Math.min(shown.pos || 0, model.N - 1)].ti;
+    a = Math.max(0, c - (listening && byWord ? ov.back : 0));
+    b = Math.min(T - 1, c + (byWord ? ov.fwd : listening ? ov.next : 0));
   }
-  return [t0, t1];
+  if (span === 'phrase') {
+    let t1 = c, n = 0;
+    while (t1 < T - 1 && n < 5 && !tokens[t1].endsPhrase && tokens[t1 + 1].pid === tokens[c].pid) { t1++; n++; }
+    b = Math.max(b, t1);
+  } else if (span === 'line') {
+    a = lineRange(a)[0]; b = lineRange(b)[1];
+  } else if (span === 'sentence') {
+    const sa = model.sentences[tokens[a].sent], sb = model.sentences[tokens[b].sent];
+    if (sa) a = sa.t0;
+    if (sb) b = sb.t1 - 1;
+  } else if (span === 'para') {
+    const pa = blockByPid.get(tokens[a].pid), pb = blockByPid.get(tokens[b].pid);
+    if (pa) a = pa.t0;
+    if (pb) b = pb.t1 - 1;
+  }
+  return [a, b];
 }
 // Sentence dimming: a sentence counts as finished once the reading spot is past its end.
 function sentDone(si) {
@@ -355,11 +378,12 @@ const scrollToCurrent = (force) => { if (force) syncStable(); keepInView(current
 // Start, taps and arrow keys move the page straight to the reading spot, in every scroll style.
 function syncStable() { stable.pos = stable.cand = follower.pos; stable.t = performance.now(); scrollSent = -1; shown.pos = follower.pos; shown.fwdCand = -1; shown.backT = 0; }
 // The shown reading spot (guide and read highlight): small steps forward follow at once, bigger jumps must hold
-// for 350 ms, and it moves back only after 700 ms, so the guide picks a place and stays there.
-const shown = { pos: 0, fwdCand: -1, fwdT: 0, backT: 0 };
+// for 350 ms, and it moves back only after 700 ms, so the guide picks a place and stays there. A restarted
+// sentence (a pickup) is followed back at once: the follower only reports one on clear evidence.
+const shown = { pos: 0, fwdCand: -1, fwdT: 0, backT: 0, restarts: 0 };
 function updateShown() {
-  const now = performance.now(), p = follower.pos || 0, prev = shown.pos || 0;
-  if (!listening || !model) { shown.pos = p; shown.fwdCand = -1; shown.backT = 0; }
+  const now = performance.now(), p = follower.pos || 0, prev = shown.pos || 0, rs = follower.restarts || 0;
+  if (!listening || !model || rs !== shown.restarts) { shown.pos = p; shown.fwdCand = -1; shown.backT = 0; shown.restarts = rs; }
   else if (p >= shown.pos) {
     shown.backT = 0;
     if (p - shown.pos <= 6) { shown.pos = p; shown.fwdCand = -1; }
@@ -453,6 +477,7 @@ function engineFor(kind) {
       final: (t) => follower.input(t, true),
       level: (rms) => { const v = Math.min(1, Math.sqrt(rms) * 3.2); $('#micDot').style.transform = `scale(${1 + v * 0.9})`; },
       error: (msg) => { toast(msg, 5000); stopListening(); },
+      dropped: () => micDropped(),
     };
     engines[kind] = kind === 'google' ? new GoogleEngine(cb) : new OnDeviceEngine(cb);
   }
@@ -508,7 +533,10 @@ async function startListening() {
   } catch (err) {
     try { eng.stop(); } catch (e) { /* already stopped */ }
     micBusy = false; renderMic(); closeLoad();
-    const msg = err && err.name === 'NotAllowedError' ? 'Mic permission was refused. Allow it in the browser’s site settings, then try again.' : (err && err.message) || String(err);
+    const msg = err && err.name === 'NotAllowedError' ? 'Mic permission was refused. Allow it in the browser’s site settings, then try again.'
+      : err && (err.name === 'NotReadableError' || err.name === 'AbortError') ? 'The mic is busy or unavailable. Another app may be using it.'
+      : (err && err.message) || String(err);
+    noteError('start: ' + ((err && err.name) || '') + ' ' + msg);
     toast(msg, 5000);
     return;
   }
@@ -520,6 +548,18 @@ async function startListening() {
   setFollow(true);
   renderMic(); wantAwake();
   userScrollUntil = 0; scrollToCurrent(true);
+}
+
+// The mic stopped sending sound (unplugged, taken by another app, or the audio system stalled): restart it
+// once, quietly. If it stops again soon after, stop and say so rather than leaving a frozen screen.
+let micDropT = -Infinity;
+function micDropped() {
+  if (!listening) return;
+  const again = performance.now() - micDropT < 20000;
+  micDropT = performance.now(); diag.micRestarts++;
+  stopListening();
+  if (again) { toast('The mic stopped working. Tap Start to try again.', 6000); return; }
+  setTimeout(() => { if (!listening && !micBusy && !pauseReasons.size && mode === 'read' && !sound) startListening(); }, 400);
 }
 
 function stopListening() {
@@ -620,9 +660,9 @@ function driver() {
 }
 // The settled reading spot: follows the live spot once it has held for 400 ms (instantly when not listening).
 function updateStable() {
-  const now = performance.now(), prev = stable.pos;
-  if (!listening) stable.pos = stable.cand = follower.pos;
-  else if (follower.pos !== stable.cand) { stable.cand = follower.pos; stable.t = now; }
+  const now = performance.now(), prev = stable.pos || 0, p = follower.pos || 0;
+  if (!listening) stable.pos = stable.cand = p;
+  else if (p !== stable.cand) { stable.cand = p; stable.t = now; }
   else if (now - stable.t > 400) stable.pos = stable.cand;
   if (stable.pos !== prev && model && model.N && (settings.said === 'sent' || settings.said === 'sent2')) {
     const a = Math.min(prev, stable.pos), b = Math.max(prev, stable.pos);
@@ -633,7 +673,11 @@ function updateStable() {
 let wakeCheck = 0;
 function tick() {
   requestAnimationFrame(tick);
-  if (performance.now() - wakeCheck > 2000) { wakeCheck = performance.now(); if (wakeWanted && !wakeLock) syncWake(); }
+  if (performance.now() - wakeCheck > 2000) {
+    wakeCheck = performance.now();
+    if (wakeWanted && !wakeLock) syncWake();
+    if (listening && engine && engine.stalledFor > 4000) micDropped();
+  }
   updateShown();
   updateStable();
   paint();
@@ -1154,7 +1198,7 @@ if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged
 
 async function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
-  $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span;
+  $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
   $('#selMarks').value = settings.marks; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
@@ -1172,14 +1216,26 @@ $('#btnSettings').onclick = () => { pauseMic('dialog'); syncSettingsUI(); $('#dl
 const bindSel = (id, key, after) => { $(id).onchange = (e) => { settings[key] = e.target.value; saveSettings(); applySettings(); updateClasses(); syncSettingsUI(); if (after) after(); }; };
 $('#sText').oninput = (e) => { settings.textSize = +e.target.value; $('#oText').textContent = settings.textSize + ' px'; applySettings(); };
 $('#sText').onchange = () => { saveSettings(); scrollToCurrent(true); };
-bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selTheme', 'theme');
+bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selOverlap', 'overlap'); bindSel('#selTheme', 'theme');
 bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
   $(id).onchange = (e) => { const v = e.target.value; settings[key] = /^\d+$/.test(v) ? +v : v; saveSettings(); scrollToCurrent(true); };
 }
-bindSel('#selEngine', 'engine', () => { if (listening) { stopListening(); startListening(); } });
+// Android speech sends audio to Google, so it asks once before switching (client scripts are often confidential).
+$('#selEngine').onchange = (e) => {
+  const v = e.target.value;
+  const apply = () => {
+    settings.engine = v; if (v === 'google') settings.googleOk = true;
+    saveSettings(); applySettings(); updateClasses(); syncSettingsUI();
+    if (listening) { stopListening(); startListening(); }
+  };
+  if (v === 'google' && !settings.googleOk) {
+    e.target.value = settings.engine;
+    confirmDo('Send audio to Google?', 'Android speech sends what the mic hears to Google to turn it into text, so the script you read leaves the tablet. The on-tablet engine keeps everything here. Use Android speech anyway?', 'Use Android speech', apply);
+  } else apply();
+};
 bindSel('#selMic', 'micSource', () => { if (listening) { stopListening(); startListening(); } });
 bindSel('#selUnit', 'ttsUnit'); bindSel('#selVoice', 'ttsVoice');
 $('#sRate').oninput = (e) => { settings.ttsRate = +e.target.value; $('#oRate').textContent = '×' + settings.ttsRate.toFixed(2); };
@@ -1219,8 +1275,32 @@ setFollow(true);
   let p = null;
   try { if (settings.lastProject) p = await store.getProject(settings.lastProject); } catch (e) { /* no storage */ }
   if (p) await loadProject(p); else renderDoc();
+  // Warm up the on-tablet speech engine (only if its model is already downloaded) so Start is quick.
+  setTimeout(async () => {
+    if (settings.engine !== 'google' && !listening && !micBusy && (await modelIsCached())) engineFor('device').load().catch(() => {});
+  }, 2000);
 })();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// ---------- diagnostics ----------
+$('#btnDiag').onclick = async () => {
+  const pick = ['textSize', 'said', 'guide', 'span', 'overlap', 'engine', 'micSource', 'marks', 'markStrength', 'linesAbove', 'scrollEvery', 'scrollStyle', 'offNotice', 'ttsUnit', 'ttsRate'];
+  const lines = [
+    `VO Prompter ${VERSION}`,
+    `Browser: ${navigator.userAgent}`,
+    `Screen: ${innerWidth}x${innerHeight} @${devicePixelRatio} ${innerWidth > innerHeight ? 'landscape' : 'portrait'}`,
+    `Speech model downloaded: ${(await modelIsCached()) ? 'yes' : 'no'} · voice: ${voiceChoice().kind}`,
+    `Settings: ${pick.map((k) => k + '=' + settings[k]).join(' ')}`,
+    `Script: ${model ? `${model.N} words, ${model.blocks.length} paragraphs, ${model.anchors.length} timestamps` : 'none'} · video: ${hasVideo() ? 'yes' : 'no'}`,
+    `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
+    `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
+  ];
+  const btn = $('#btnDiag');
+  let ok = true;
+  try { await navigator.clipboard.writeText(lines.join('\n')); } catch (e) { ok = false; }
+  btn.textContent = ok ? 'Copied ✓' : 'Couldn’t copy';
+  setTimeout(() => { btn.textContent = 'Copy diagnostics'; }, 2500);
+};
 
 // for automated checks
 window.__vop = {

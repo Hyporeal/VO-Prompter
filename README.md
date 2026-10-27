@@ -43,21 +43,24 @@ Without timestamps, the video is spread evenly across the whole script.
 - Read words, highlights and the guide fade in and out instead of switching instantly.
 - **Mark strength**: faint (default), medium or strong for skipped-word and misread marks.
 - **Guide style**: underline or fill the letters.
-- **Guide covers**: off, next word, next phrase, whole line (the line on screen), whole sentence, or whole paragraph. While you read, the guide runs slightly ahead of the last recognized word to make up for the recognizer's delay.
+- **Guide covers**: off, next word, next phrase, whole line (the line on screen), whole sentence, or whole paragraph.
+- **Guide overlap**: the app hears each word about half a second after you say it. With overlap (default: a little), the guide also covers the word it just heard and the next few, so the word you're saying stays inside it: next word becomes a short band (1 word back, 3 ahead; More: 2 back, 5 ahead), and line, sentence and paragraph guides take in the next one as you reach the end of the current one. None is a single exact spot.
 
 ## Speech engines
 
-- **On tablet** (default): [Vosk](https://alphacephei.com/vosk/) running in the browser. Your voice never leaves the tablet. The first start downloads a 41 MB model once; after that it works offline.
+- **On tablet** (default): [Vosk](https://alphacephei.com/vosk/) running in the browser. Your voice never leaves the tablet. The first start downloads a 41 MB model once; after that it works offline, and the engine warms up a couple of seconds after the app opens so **Start** is quick (the mic stays off until you tap Start).
 - **Android speech (Google)**: Chrome's speech recognition, which is Google's. More accurate, but it sends audio to Google and usually needs internet.
 
 The **Tablet mic** setting keeps Bluetooth earbuds out of phone-call mode.
 
-The mic pauses while Settings or Files is open, when the app loses focus, or when the screen goes off, and turns back on when you return if it was on.
+The mic pauses while Settings or Files is open, when the app loses focus, or when the screen goes off, and turns back on when you return if it was on. If the mic stops sending sound while you read (unplugged, or taken by another app), it restarts once on its own; if that doesn't help, it stops and says so.
+
+Switching to Android speech asks once first, because it sends audio of what you read to Google.
 
 ## Listen-mode voices
 
 - **Android voice**: the tablet's text-to-speech. Chrome on Android lists languages rather than voices; the voice used is the one picked in Android Settings (search "Text-to-speech", choose Speech Services by Google, then Install voice data → English (United States)).
-- **Natural voices**: [Piper](https://github.com/rhasspy/piper) neural voices running on the tablet. Each downloads once (about 60 MB) from the Piper voice library, then works offline. Each sentence takes a moment to prepare.
+- **Natural voices**: [Piper](https://github.com/rhasspy/piper) neural voices running on the tablet. Each downloads once (about 60 MB) from a fixed release of the Piper voice library, then works offline. Each sentence takes a moment to prepare.
 
 ## Mistake marks
 
@@ -65,11 +68,16 @@ The mic pauses while Settings or Files is open, when the app loses focus, or whe
 - **Possible misreads** (optional) get a dotted underline. These are often the recognizer mishearing, not you.
 - **Off-script notice** (off by default): a dim tag that appears after you've been off script for a moment. Either way, it finds you again when you're back on a line from the script, or if you jump back or ahead.
 - Stray words (a cough, someone in the room, a misheard "the") don't move the reading spot; it only moves forward on a content word or two matching words in a row.
+- **Pickups**: if you stumble and start the sentence again, it follows you back to the start of the sentence. Jumping ahead past more than a few words needs several matching words first, so a phrase that also appears later in the script doesn't pull the spot ahead.
 - **Files → Clear read marks** resets everything.
 
 ## Keyboard / page-turner
 
 Space starts and stops listening. Up and down arrows (or Page Up/Down) move by sentence. Escape stops Listen mode.
+
+## Troubleshooting
+
+**Settings → Copy diagnostics** copies app details (version, settings, tablet, recent errors) to paste into a message. It never includes your script's words, file names or video.
 
 ## Privacy
 
@@ -87,3 +95,5 @@ Scripts, edits and videos are stored only in the tablet's browser storage. This 
 - piper_phonemize WebAssembly build of [piper-phonemize](https://github.com/rhasspy/piper-phonemize) (MIT) and [espeak-ng](https://github.com/espeak-ng/espeak-ng) (GPL-3.0) in `vendor/piper/`
 - Piper voices are downloaded on demand from [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); each voice's license is in its model card
 - Atkinson Hyperlegible and JetBrains Mono fonts (SIL Open Font License) in `fonts/`
+
+Full license texts are in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) (also under **Settings → Licenses**).

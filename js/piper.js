@@ -15,7 +15,10 @@ export const PIPER_VOICES = [
   { id: 'en_GB-alan-medium', name: 'Alan (UK, male)', path: 'en/en_GB/alan/medium' },
   { id: 'en_GB-cori-medium', name: 'Cori (UK, female)', path: 'en/en_GB/cori/medium' },
 ];
-const HF = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/';
+// A fixed revision of the Piper voice library (its v1.0.0 release), so a downloaded voice never changes.
+// Voices saved by earlier versions used the library's "main" address; those copies are still used.
+const HF = 'https://huggingface.co/rhasspy/piper-voices/resolve/375a0fe641dea077c2a47b4e9a056d6da521eed3/';
+const HF_OLD = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/';
 export const VOICE_CACHE = 'vo-prompter-voices-v1';
 
 // Loads a script once; a failed load is removed so the next attempt really retries.
@@ -33,10 +36,11 @@ function loadScript(src) {
   return p;
 }
 
-async function cachedFetch(url, onProgress) {
+async function cachedFetch(path, onProgress) {
+  const url = HF + path;
   let cache = null;
   try { cache = await caches.open(VOICE_CACHE); } catch (e) { /* no Cache API */ }
-  if (cache) { const hit = await cache.match(url); if (hit) return hit.arrayBuffer(); }
+  if (cache) { const hit = (await cache.match(url)) || (await cache.match(HF_OLD + path)); if (hit) return hit.arrayBuffer(); }
   const r = await fetch(url);
   if (!r.ok) throw new Error('Couldn’t download the voice (' + r.status + ')');
   const total = +r.headers.get('content-length') || 0;
@@ -57,7 +61,8 @@ async function cachedFetch(url, onProgress) {
 export async function voiceIsDownloaded(id) {
   const v = PIPER_VOICES.find((x) => x.id === id);
   if (!v) return false;
-  try { const c = await caches.open(VOICE_CACHE); return !!(await c.match(HF + v.path + '/' + v.id + '.onnx')); } catch (e) { return false; }
+  const path = v.path + '/' + v.id + '.onnx';
+  try { const c = await caches.open(VOICE_CACHE); return !!((await c.match(HF + path)) || (await c.match(HF_OLD + path))); } catch (e) { return false; }
 }
 
 let ortP = null;
@@ -106,7 +111,7 @@ let loaded = null; // { id, session, config }
 export async function loadVoice(id, onProgress) {
   if (loaded && loaded.id === id) return loaded;
   const v = PIPER_VOICES.find((x) => x.id === id) || PIPER_VOICES[0];
-  const base = HF + v.path + '/' + v.id + '.onnx';
+  const base = v.path + '/' + v.id + '.onnx';
   const [ort, , config, model] = await Promise.all([
     getOrt(), getPhonemizer(),
     cachedFetch(base + '.json').then((b) => JSON.parse(new TextDecoder().decode(b))),

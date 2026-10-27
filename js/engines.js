@@ -152,12 +152,28 @@ export class OnDeviceEngine {
     rec.on('error', (m) => this.cb.error && this.cb.error(String(m.error || 'Speech error')));
     node.port.onmessage = (e) => {
       if (!this.active) return;
+      this.lastAudio = performance.now();
       try { rec.acceptWaveformFloat(e.data.pcm, ctx.sampleRate); } catch (err) { /* worker gone */ }
       this.cb.level && this.cb.level(e.data.rms);
     };
     this.node = node;
+    // If the mic goes away (unplugged, or taken by another app) or Android pauses the audio, tell the app.
+    const track = stream.getAudioTracks()[0];
+    if (track) track.addEventListener('ended', () => { if (this.active && this.stream === stream) this.cb.dropped && this.cb.dropped(); });
+    ctx.onstatechange = () => { if (this.active && this.ctx === ctx && ctx.state === 'suspended') ctx.resume().catch(() => {}); };
     await ctx.resume();
+    this.lastAudio = performance.now(); this.mutedSince = 0;
     this.active = true;
+  }
+  // How long the mic has not been delivering sound, in ms (0 when fine or not listening). Sound arrives every
+  // 50 ms, even in silence; a mic that has ended, or been muted by the system (another app took it), counts too.
+  get stalledFor() {
+    if (!this.active) return 0;
+    const now = performance.now(), tr = this.stream && this.stream.getAudioTracks()[0];
+    if (!tr || tr.readyState === 'ended') return Infinity;
+    if (tr.muted) { if (!this.mutedSince) this.mutedSince = now; return now - this.mutedSince; }
+    this.mutedSince = 0;
+    return now - this.lastAudio;
   }
   stop() {
     const wasActive = this.active;
@@ -203,6 +219,7 @@ export class GoogleEngine {
     r.onerror = (e) => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { this.active = false; this.cb.error && this.cb.error('Mic permission was refused. Allow it in the browser’s site settings, then try again.'); }
       else if (e.error === 'network') this.cb.error && this.cb.error('Google speech needs an internet connection.');
+      else if (e.error === 'audio-capture') { this.active = false; this.cb.error && this.cb.error('The mic isn’t available. Another app may be using it.'); }
     };
     r.onend = () => {
       if (interimText) { this.cb.final(interimText); interimText = ''; }

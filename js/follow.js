@@ -22,6 +22,17 @@ function lev(a, b) {
   return prev[lb];
 }
 
+// Words that sound the same; recognizers often pick the wrong spelling.
+const SOUND_ALIKE = new Map();
+for (const g of ['there their theyre', 'to too two', 'for four fore', 'here hear', 'your youre', 'its its', 'our are hour',
+  'then than', 'know no', 'right write rite', 'one won', 'by buy bye', 'whole hole', 'weather whether', 'where wear ware',
+  'which witch', 'new knew', 'see sea', 'week weak', 'would wood', 'ate eight', 'peace piece', 'principal principle',
+  'site sight cite', 'board bored', 'break brake', 'cell sell', 'fair fare', 'flour flower', 'mail male', 'meet meat',
+  'pair pare pear', 'plain plane', 'role roll', 'sale sail', 'some sum', 'tail tale', 'wait weight', 'way weigh', 'wee we',
+  'well wheel', 'lets let', 'whats what', 'thats that', 'weve we', 'theyll they', 'youll you', 'ill i', 'were where']) {
+  const ws = g.split(' ');
+  for (const a of ws) for (const b of ws) if (a !== b) SOUND_ALIKE.set(a + '|' + b, true);
+}
 let simCache = new Map(), simCount = 0;
 export function sim(a, b) {
   if (a === b) return 1;
@@ -31,6 +42,7 @@ export function sim(a, b) {
   if (c !== undefined) return c;
   let s;
   if (((a === 'oh' || a === 'o') && b === 'zero') || ((b === 'oh' || b === 'o') && a === 'zero')) s = 1;
+  else if (SOUND_ALIKE.has(a + '|' + b)) s = 0.9;
   else if (Math.min(a.length, b.length) <= 2) s = 0;
   else if (Math.abs(a.length - b.length) > Math.max(a.length, b.length) * 0.5) s = 0;
   else {
@@ -128,14 +140,18 @@ export function align(units, a0, h, opts = {}) {
   // Words before the first solid match are only marked missed when plenty follows (3+ matches, 2+ content words);
   // a single coincidental match further on just moves the spot.
   if (solid.length >= 3 && solid.filter((e) => e.content).length >= 2) markRun(units.slice(a0, fs.u0), true);
-  let matches = 0, content = 0, run = [];
+  let matches = 0, content = 0, run = [], streak = 0, maxRun = 0, lastI = -9, lastU = -9;
   for (let k = fs.k; k <= ls.k; k++) {
     const o = ops[k];
-    if (o.op === OP_INS) continue;
-    if (o.op === OP_DEL) { run.push(units[a0 + o.j - 1]); continue; }
+    if (o.op === OP_INS) { streak = 0; continue; }
+    if (o.op === OP_DEL) { run.push(units[a0 + o.j - 1]); streak = 0; continue; }
     markRun(run, false); run = [];
     const u = units[a0 + o.j - 1];
     hypUnit[o.i] = u.u;
+    const hitHere = o.op !== OP_DIAG || sim(h[o.i - 1], u.key) >= thr(u.key);
+    streak = hitHere && o.i - lastI <= 2 && u.u - lastU <= 2 ? streak + 1 : (hitHere ? 1 : 0);
+    if (streak > maxRun) maxRun = streak;
+    lastI = o.i; lastU = u.u;
     if (o.op === OP_DIAG) {
       if (sim(h[o.i - 1], u.key) >= thr(u.key)) { marks.set(u.u, READ); matches++; hitAt[o.i] = 1; if (!u.func && !u.soft) content++; }
       else marks.set(u.u, u.soft || u.func ? READ : MAYBE);
@@ -144,7 +160,7 @@ export function align(units, a0, h, opts = {}) {
   }
   let tailHit = 0;
   for (let k = H - K + 1; k <= H; k++) tailHit += hitAt[k];
-  return { end: ls.u + 1, score: bv, marks, matches, content, trailing: H - ls.i, first: fs.u0, tailHit, tailN: K, hypUnit };
+  return { end: ls.u + 1, score: bv, marks, matches, content, trailing: H - ls.i, first: fs.u0, tailHit, tailN: K, hypUnit, maxRun };
 }
 
 export class Follower {
@@ -162,6 +178,8 @@ export class Follower {
     // trusted: how far the reader has really read. After an automatic jump it only moves once a few more
     // words have been read past the landing spot, so a wrong jump never confirms anything.
     this.trusted = this.pos; this.trustAfter = this.pos;
+    this.sentOf = new Int32Array(model.N + 1).fill(-1);
+    model.sentences.forEach((s, i) => { for (let u = s.u0; u < s.u1; u++) this.sentOf[u] = i; });
   }
 
   eff(u) { return this.prov && this.prov.has(u) ? this.prov.get(u) : this.status[u]; }
@@ -208,15 +226,32 @@ export class Follower {
     const keys = hypKeys(text || '');
     this.segLen = keys.length;
     const h = keys.slice(this.segSkip);
-    let jump = false;
+    let jump = false, restarted = false;
     if (h.length) {
-      const r = align(this.m.units, this.anchor, h);
+      let r = align(this.m.units, this.anchor, h);
+      // Pickups: a reader who stumbles usually restarts the sentence (or the one just finished). If the words fit
+      // a restart clearly better than continuing, follow the restart.
+      if (r && h.length <= 16) {
+        const S = this.m.sentences, si = this.sentOf[Math.min(this.anchor, this.m.N - 1)];
+        const starts = [];
+        if (si >= 0 && S[si].u0 < this.anchor) starts.push(S[si].u0);
+        else if (si > 0 && S[si].u0 === this.anchor) starts.push(S[si - 1].u0);
+        for (const st of starts) {
+          const r2 = align(this.m.units, st, h);
+          if (r2 && r2.first >= 0 && r2.first <= st + 2 && r2.matches >= 3 && r2.score > r.score + 1.0) {
+            r = r2; this.anchor = st; restarted = true; this.restarts = (this.restarts || 0) + 1; break;
+          }
+        }
+      }
       let relocated = false;
       const lost = r && (r.trailing >= 3 || (h.length >= 4 && r.tailHit < r.tailN * 0.5));
-      if ((!r || lost)) {
+      // doubt: most recent words only partly line up; look for a clearly better place without freezing here
+      const doubt = r && !lost && !restarted && h.length >= 5 && r.tailHit <= r.tailN - 2;
+      if ((!r || lost || doubt)) {
         if (h.length !== this.lastRelocLen) {
           this.lastRelocLen = h.length;
-          const rel = this.relocate(h);
+          let rel = this.relocate(h);
+          if (rel && doubt && rel.kind === 'here') rel = null;
           if (rel) {
             relocated = true; jump = true;
             if (this.prov) this.commit();
@@ -232,11 +267,12 @@ export class Follower {
             this.setPos(rel.end, true);
           }
         }
-        if (!relocated) this.off = true;
+        if (!relocated && !doubt) this.off = true;
+        else if (doubt) this.off = false;
       } else this.off = false;
       // When lost, keep the position unless the reader clearly read up to a point and then went off script.
       if (r && !relocated && (!lost || r.trailing >= 3)) {
-        this.prov = r.marks; this.setPos(r.first >= 0 ? r.end : this.pos, false);
+        this.prov = r.marks; this.setPos(r.first >= 0 ? r.end : this.pos, restarted);
         // Long utterance: lock in all but the last few words so each update stays quick.
         if (!lost && h.length > 30) {
           const cut = h.length - 14;
@@ -271,6 +307,12 @@ export class Follower {
         votes.set(c + 1, (votes.get(c + 1) || 0) + 0.5);
       }
     });
+    // a rare word (4 or fewer places in the script) is enough to look at a spot; the alignment check decides
+    tail.forEach((k, j) => {
+      if (FUNC.has(k) || k.length < 3) return;
+      const list = m.index.get(k);
+      if (list && list.length <= 4) for (const u of list) { const c = u - j; if ((votes.get(c) || 0) < 2) votes.set(c, 2); }
+    });
     const cands = [...votes].filter(([, v]) => v >= 2)
       .sort((a, b) => b[1] - a[1] || Math.abs(a[0] - this.pos) - Math.abs(b[0] - this.pos)).slice(0, 12);
     let best = null;
@@ -291,10 +333,11 @@ export class Follower {
     const here = align(m.units, Math.max(0, this.pos - 12), tail, { freeLead: true, window: K + 24 });
     if (here && here.first >= 0 && Math.abs(here.first - this.pos) <= 24 && here.content >= 1 && here.matches >= 2) {
       const clearlyBetter = best.matches >= here.matches + 2 && best.score >= here.score + 1.5;
-      if (!clearlyBetter) return { ...here, score: here.score };
+      if (!clearlyBetter) return { ...here, score: here.score, kind: 'here' };
     }
-    // a forward jump past more than a few words needs more evidence
-    if (best.first - this.pos > 12 && (best.matches < 4 || best.content < 3)) return null;
-    return best;
+    // a forward jump past more than a few words needs more evidence: 4+ matches with 3+ content words,
+    // or 5+ words in a row (a phrase like "now we can go on to the next one" is mostly small words)
+    if (best.first - this.pos > 12 && !((best.matches >= 4 && best.content >= 3) || best.maxRun >= 5)) return null;
+    return { ...best, kind: 'best' };
   }
 }

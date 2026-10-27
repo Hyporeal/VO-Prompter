@@ -6,7 +6,7 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 
-const VERSION = '1.1.15';
+const VERSION = '1.1.16';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -380,7 +380,8 @@ const scrollToCurrent = (force) => { if (force) syncStable(); keepInView(current
 // Start, taps and arrow keys move the page straight to the reading spot, in every scroll style.
 function syncStable() { stable.pos = stable.cand = follower.pos; stable.t = performance.now(); scrollSent = -1; shown.pos = follower.pos; shown.fwdCand = -1; shown.backT = 0; }
 // The shown reading spot (guide and read highlight): small steps forward follow at once, bigger jumps must hold
-// for 350 ms, and it moves back only after 700 ms, so the guide picks a place and stays there. A restarted
+// for 350 ms, and it moves back only after 700 ms (2 s for a word or two: usually the recognizer revising its last
+// word at a sentence end), so the guide picks a place and stays there. A restarted
 // sentence (a pickup) is followed back at once: the follower only reports one on clear evidence.
 const shown = { pos: 0, fwdCand: -1, fwdT: 0, backT: 0, restarts: 0 };
 function updateShown() {
@@ -394,7 +395,7 @@ function updateShown() {
   } else {
     shown.fwdCand = -1;
     if (!shown.backT) shown.backT = now;
-    else if (now - shown.backT > 700) { shown.pos = p; shown.backT = 0; }
+    else if (now - shown.backT > (shown.pos - p <= 2 ? 2000 : 700)) { shown.pos = p; shown.backT = 0; }
   }
   if (shown.pos !== prev && model && model.N) markDirtyUnits(Math.min(prev, shown.pos) - 1, Math.max(prev, shown.pos) + 1);
 }
@@ -403,7 +404,7 @@ function updateShown() {
 // jumps ahead and back never moves the page. Styles: 'pause' waits for a break in your speech before moving
 // (unless the line runs out of room), 'step' moves right away, 'slow' drifts up gently and continuously.
 const stable = { pos: 0, cand: -1, t: 0 };
-let lastScrollT = 0, slowAcc = 0, scrollSent = -1;
+let lastScrollT = 0, slowAcc = 0, scrollSent = -1, slowPx = 0;
 function autoScroll() {
   const now = performance.now();
   const dt = Math.min(0.1, (now - (lastScrollT || now)) / 1000); lastScrollT = now;
@@ -442,7 +443,14 @@ function autoScroll() {
     if (move > lineH * 5) { slowAcc = 0; smoothScrollTo(scriptEl.scrollTop + move, 350); return; } // far away: go there
     const speed = Math.min(lineH * 1.6, Math.max(lineH * 0.35, move * 0.7)) * (roomOut ? 3 : 1);
     slowAcc += speed * dt;
-    if (slowAcc >= 1) { const step = Math.floor(slowAcc); slowAcc -= step; scriptEl.scrollTop += Math.min(step, move); }
+    // move in steps of one screen pixel (a fraction of a CSS pixel on the tablet) so the drift is smooth
+    const px = slowPx || 1 / Math.max(1, window.devicePixelRatio || 1);
+    if (slowAcc >= px) {
+      const step = Math.floor(slowAcc / px) * px, before = scriptEl.scrollTop;
+      slowAcc -= step;
+      scriptEl.scrollTop = before + Math.min(step, move);
+      if (!slowPx && scriptEl.scrollTop === before && step < 1) slowPx = 1; // fractional scrolling not supported: whole pixels
+    }
     return;
   }
   if (anim || !due) return;
@@ -663,12 +671,13 @@ function driver() {
   if (mode === 'read' && listening) { const r = follower.rate(); return { pos: follower.pos, rate: r.rate, lastT: r.lastT }; }
   return { pos: follower.pos, rate: 0, lastT: 0 };
 }
-// The settled reading spot: follows the live spot once it has held for 400 ms (instantly when not listening).
+// The settled reading spot: follows the live spot once it has held for 400 ms (instantly when not listening;
+// 2 s for a step back of a word or two, so a revised last word doesn't un-dim a finished sentence).
 function updateStable() {
   const now = performance.now(), prev = stable.pos || 0, p = follower.pos || 0;
   if (!listening) stable.pos = stable.cand = p;
   else if (p !== stable.cand) { stable.cand = p; stable.t = now; }
-  else if (now - stable.t > 400) stable.pos = stable.cand;
+  else if (now - stable.t > (p < stable.pos && stable.pos - p <= 2 ? 2000 : 400)) stable.pos = stable.cand;
   if (stable.pos !== prev && model && model.N && (settings.said === 'sent' || settings.said === 'sent2')) {
     const a = Math.min(prev, stable.pos), b = Math.max(prev, stable.pos);
     const si = model.tokens[model.units[Math.min(a, model.N - 1)].ti].sent, s0 = model.sentences[Math.max(0, si - 1)];

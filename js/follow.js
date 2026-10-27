@@ -86,12 +86,12 @@ export function align(units, a0, h, opts = {}) {
       if (v > best) { best = v; op = OP_DEL; }
       if (i >= 2 && u.key.length >= 5) {
         const s2 = sim(h[i - 2] + hk, u.key);
-        if (s2 >= thr(u.key)) { v = D[prow - cols + j - 1] + matchScore(u, s2) - 0.1; if (v > best) { best = v; op = OP_H2; } }
+        if (s2 >= Math.max(0.82, thr(u.key))) { v = D[prow - cols + j - 1] + matchScore(u, s2) - 0.1; if (v > best) { best = v; op = OP_H2; } }
       }
       if (j >= 2 && hk.length >= 5) {
         const u2 = units[a0 + j - 2];
         const s3 = sim(hk, u2.key + u.key);
-        if (s3 >= thr(hk)) { v = D[prow + j - 2] + matchScore(u, s3) + 0.3 - 0.1; if (v > best) { best = v; op = OP_S2; } }
+        if (s3 >= Math.max(0.82, thr(hk))) { v = D[prow + j - 2] + matchScore(u, s3) + 0.3 - 0.1; if (v > best) { best = v; op = OP_S2; } }
       }
       D[row + j] = best; B[row + j] = op;
     }
@@ -124,28 +124,45 @@ export function align(units, a0, h, opts = {}) {
   const solid = hits.filter((e, q) => e.content
     || (q > 0 && e.u0 - hits[q - 1].u <= 1 && e.i - hits[q - 1].i <= 2)
     || (q + 1 < hits.length && hits[q + 1].u0 - e.u <= 1 && hits[q + 1].i - e.i <= 2));
+  // A match reached by skipping 3+ script words (with nothing heard for them) only counts once another match
+  // follows close by. Readers rarely skip words mid-phrase, but a re-read or a misheard word often lines up
+  // with a word a little further on. (Words heard wrong in between are not skips.)
+  for (let q = 1; q < solid.length; q++) {
+    let dels = 0;
+    for (let k = solid[q - 1].k + 1; k < solid[q].k; k++) if (ops[k].op === OP_DEL) dels++;
+    if (dels < 3) continue;
+    const nx = solid[q + 1];
+    if (!(nx && nx.u0 - solid[q].u <= 2 && nx.i - solid[q].i <= 3)) { solid.length = q; break; }
+  }
   const marks = new Map();
   const hitAt = new Uint8Array(H + 1);
   const hypUnit = new Int32Array(H + 1).fill(-1);
   const K = Math.min(6, H);
   if (!solid.length) return { end: a0, score: bv, marks, matches: 0, content: 0, trailing: H, first: -1, tailHit: 0, tailN: K, hypUnit };
   const fs = solid[0], ls = solid[solid.length - 1];
-  const markRun = (run, isLead) => {
+  // Skipped-word marks need clear evidence, because the recognizer often drops or mishears words: nothing heard
+  // in that spot (heard-but-wrong words are a recognizer slip, not a skip), and at least two words in a row
+  // missing (two content words at the start of an utterance, where the recognizer most often drops words).
+  const markRun = (run, isLead, heard) => {
     if (!run.length) return;
     if (isLead && (opts.freeLead || run.length > 25)) return;
-    const real = run.some((u) => !u.soft && !u.func) || run.filter((u) => !u.soft).length >= 3;
+    let real = run.some((u) => !u.soft && !u.func) || run.filter((u) => !u.soft).length >= 3;
+    if (heard) real = false;
+    if (isLead ? run.filter((u) => !u.soft && !u.func).length < 2 : run.filter((u) => !u.soft).length < 2) real = false;
     for (const u of run) marks.set(u.u, real && !u.soft ? SKIP : READ);
   };
   // anything before the first solid match counts as not read yet (skipped, if it's a short stretch)
   // Words before the first solid match are only marked missed when plenty follows (3+ matches, 2+ content words);
   // a single coincidental match further on just moves the spot.
-  if (solid.length >= 3 && solid.filter((e) => e.content).length >= 2) markRun(units.slice(a0, fs.u0), true);
+  if (solid.length >= 3 && solid.filter((e) => e.content).length >= 2) markRun(units.slice(a0, fs.u0), true, fs.i > 1);
   let matches = 0, content = 0, run = [], streak = 0, maxRun = 0, lastI = -9, lastU = -9;
+  let heard = false;
   for (let k = fs.k; k <= ls.k; k++) {
     const o = ops[k];
-    if (o.op === OP_INS) { streak = 0; continue; }
+    if (o.op === OP_INS) { streak = 0; heard = true; continue; }
     if (o.op === OP_DEL) { run.push(units[a0 + o.j - 1]); streak = 0; continue; }
-    markRun(run, false); run = [];
+    markRun(run, false, heard); run = [];
+    heard = o.op === OP_DIAG && sim(h[o.i - 1], units[a0 + o.j - 1].key) < thr(units[a0 + o.j - 1].key);
     const u = units[a0 + o.j - 1];
     hypUnit[o.i] = u.u;
     const hitHere = o.op !== OP_DIAG || sim(h[o.i - 1], u.key) >= thr(u.key);

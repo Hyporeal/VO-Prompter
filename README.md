@@ -44,7 +44,7 @@ Without timestamps, the video is spread evenly across the whole script.
 - **Mark strength**: faint (default), medium or strong for skipped-word and misread marks.
 - **Guide style**: underline or fill the letters.
 - **Guide covers**: off, next word, next phrase, whole line (the line on screen), whole sentence, or whole paragraph.
-- **Guide overlap**: the app hears each word about half a second after you say it. With overlap (default: a little), the guide also covers the word it just heard and the next few, so the word you're saying stays inside it: next word becomes a short band (1 word back, 3 ahead; More: 2 back, 5 ahead), and line, sentence and paragraph guides take in the next one as you reach the end of the current one. None is a single exact spot.
+- **Guide overlap**: the app hears each word about half a second after you say it. With overlap (default: a little), the guide also covers the word it just heard and the next few, so the word you're saying stays inside it: next word becomes a short band (2 words back, 4 ahead; More: 2 back, 6 ahead), and line, sentence and paragraph guides take in the next one as you reach the end of the current one. None is a single exact spot.
 
 ## Speech engines
 
@@ -68,7 +68,7 @@ Switching to Android speech asks once first, because it sends audio of what you 
 - **Possible misreads** (optional) get a dotted underline. These are often the recognizer mishearing, not you.
 - **Off-script notice** (off by default): a dim tag that appears after you've been off script for a moment. Either way, it finds you again when you're back on a line from the script, or if you jump back or ahead.
 - Stray words (a cough, someone in the room, a misheard "the") don't move the reading spot; it only moves forward on a content word or two matching words in a row.
-- **Pickups**: if you stumble and start the sentence again, it follows you back to the start of the sentence. Jumping ahead past more than a few words needs several matching words first, so a phrase that also appears later in the script doesn't pull the spot ahead.
+- **Pickups**: if you stumble and start the phrase or sentence again, it follows you back as soon as it hears a few words. Jumping ahead past more than a few words needs several matching words first, so a phrase that also appears later in the script doesn't pull the spot ahead.
 - **Files → Clear read marks** resets everything.
 
 ## Keyboard / page-turner

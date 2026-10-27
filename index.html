@@ -106,7 +106,7 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .para .edited-dot { display: inline-block; width: .32em; height: .32em; border-radius: 50%; background: var(--accent); margin-left: .3em; vertical-align: .25em; }
 .w { border-radius: 4px; cursor: pointer; --txt: var(--fg); --guide: var(--accent);
   transition: color .35s ease, background-color .6s ease, box-shadow .3s ease, text-decoration-color .8s ease; }
-.g { border-radius: 0; transition: color .35s ease, background-color .6s ease, box-shadow .3s ease; }
+.g { border-radius: 0; --guide: var(--accent); transition: color .35s ease, background-color .6s ease, box-shadow .3s ease; }
 /* calm: things that change while you read fade instead of flashing */
 .said-hl .w.said, .said-hl .g.said { transition: background-color 1.4s ease; }
 .said-dim .w.said, .said-sent .w.done, .said-dim .g.said, .said-sent .g.done { transition: color 1.6s ease; }

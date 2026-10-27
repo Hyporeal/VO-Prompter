@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.12';
+const VERSION = '1.1.13';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -235,7 +235,7 @@ function lineRange(t) {
 // reading, the guide also covers the word it just heard and the next few: the word you're saying stays inside
 // it. Line, sentence and paragraph guides take in the next one as you reach the last words of the current one.
 // "None" is the exact single spot (with a small lead), as before.
-const OVERLAP = { some: { back: 1, fwd: 3, next: 2 }, more: { back: 2, fwd: 5, next: 3 } };
+const OVERLAP = { some: { back: 2, fwd: 4, next: 2 }, more: { back: 2, fwd: 6, next: 3 } };
 function guideRange() {
   if (mode !== 'read' || settings.span === 'off' || !model || follower.pos >= model.N) return [-1, -1];
   const { tokens, units } = model;

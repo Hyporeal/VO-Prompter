@@ -180,6 +180,29 @@ export class Follower {
     this.trusted = this.pos; this.trustAfter = this.pos;
     this.sentOf = new Int32Array(model.N + 1).fill(-1);
     model.sentences.forEach((s, i) => { for (let u = s.u0; u < s.u1; u++) this.sentOf[u] = i; });
+    // phraseStart[u]: first unit of the phrase (words between commas, semicolons or sentence ends) holding unit u
+    this.phraseStart = new Int32Array(model.N + 1);
+    let ps = 0;
+    for (let u = 0; u < model.N; u++) {
+      if (u > 0) {
+        const t = model.tokens[model.units[u].ti], pt = model.tokens[model.units[u - 1].ti];
+        if (pt !== t && (pt.endsPhrase || pt.pid !== t.pid)) ps = u;
+      }
+      this.phraseStart[u] = ps;
+    }
+    this.phraseStart[model.N] = ps;
+  }
+
+  // Where a reader who stumbles is likely to start again, nearest first: the start of the phrase and of the
+  // sentence they're in (or of the previous one, when they're right at the start of one).
+  restartPoints(a) {
+    const u = Math.min(a, this.m.N - 1), S = this.m.sentences, out = [];
+    const add = (x) => { if (x >= 0 && x < a && a - x <= 40 && !out.includes(x)) out.push(x); };
+    const p = this.phraseStart[u];
+    add(p < a ? p : p > 0 ? this.phraseStart[p - 1] : -1);
+    const si = this.sentOf[u];
+    if (si >= 0) add(S[si].u0 < a ? S[si].u0 : si > 0 ? S[si - 1].u0 : -1);
+    return out.sort((x, y) => y - x);
   }
 
   eff(u) { return this.prov && this.prov.has(u) ? this.prov.get(u) : this.status[u]; }
@@ -229,14 +252,10 @@ export class Follower {
     let jump = false, restarted = false;
     if (h.length) {
       let r = align(this.m.units, this.anchor, h);
-      // Pickups: a reader who stumbles usually restarts the sentence (or the one just finished). If the words fit
-      // a restart clearly better than continuing, follow the restart.
+      // Pickups: a reader who stumbles usually starts the phrase or sentence again. If the words fit a restart
+      // clearly better than continuing, follow the restart.
       if (r && h.length <= 16) {
-        const S = this.m.sentences, si = this.sentOf[Math.min(this.anchor, this.m.N - 1)];
-        const starts = [];
-        if (si >= 0 && S[si].u0 < this.anchor) starts.push(S[si].u0);
-        else if (si > 0 && S[si].u0 === this.anchor) starts.push(S[si - 1].u0);
-        for (const st of starts) {
+        for (const st of this.restartPoints(this.anchor)) {
           const r2 = align(this.m.units, st, h);
           if (r2 && r2.first >= 0 && r2.first <= st + 2 && r2.matches >= 3 && r2.score > r.score + 1.0) {
             r = r2; this.anchor = st; restarted = true; this.restarts = (this.restarts || 0) + 1; break;

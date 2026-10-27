@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.4';
+const VERSION = '1.1.5';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -166,7 +166,7 @@ function renderDoc() {
 // Class changes are batched into one paint per frame (from the tick loop), and only words that could have
 // changed are touched. updateClasses() asks for a full repaint.
 let dirtyLo = Infinity, dirtyHi = -1, dirtyAll = false;
-let guideA = -1, guideB = -1, lastFollowPos = 0, lastAnchor = 0;
+let guideA = -1, guideB = -1, lastFollowPos = 0, lastAnchor = 0, lastTrusted = 0;
 let blockByPid = new Map();
 const LAG = { device: 0.4, google: 0.7 }; // typical seconds between saying a word and the recognizer reporting it
 function updateClasses() { dirtyAll = true; }
@@ -235,7 +235,7 @@ function tokState(t) {
   const { tokens, units } = model;
   const tok = tokens[t];
   const sent = tok.sent >= 0 ? model.sentences[tok.sent] : null;
-  const confirmed = !!sent && sent.u1 <= follower.anchor;
+  const confirmed = !!sent && sent.u1 <= follower.anchor && Math.min(sent.u1 + 2, model.N) <= follower.trusted;
   let said = tok.spoken, skip = false, maybe = false;
   for (let u = tok.u0; u < tok.u1; u++) {
     const st = follower.eff(u);
@@ -379,11 +379,11 @@ function onFollow(e) {
   if (!model) return;
   if (e && e.jump) dirtyAll = true;
   else {
-    const lo = Math.min(follower.anchor, lastAnchor, lastFollowPos, follower.pos);
+    const lo = Math.min(follower.anchor, lastAnchor, lastFollowPos, follower.pos, lastTrusted);
     const sl = model.sentences[model.tokens[model.units[Math.min(lo, model.N - 1)].ti].sent];
     markDirtyUnits(sl ? Math.min(lo, sl.u0) : lo, Math.max(follower.pos, lastFollowPos) + 1);
   }
-  lastAnchor = follower.anchor;
+  lastAnchor = follower.anchor; lastTrusted = follower.trusted;
   if (settings.said === 'sent' || settings.said === 'sent2') {
     const u = Math.min(follower.pos, model.N - 1), si = model.tokens[model.units[u].ti].sent;
     const s0 = model.sentences[Math.max(0, si - 2)];

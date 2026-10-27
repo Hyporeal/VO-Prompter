@@ -125,7 +125,9 @@ export function align(units, a0, h, opts = {}) {
     for (const u of run) marks.set(u.u, real && !u.soft ? SKIP : READ);
   };
   // anything before the first solid match counts as not read yet (skipped, if it's a short stretch)
-  markRun(units.slice(a0, fs.u0), true);
+  // Words before the first solid match are only marked missed when plenty follows (3+ matches, 2+ content words);
+  // a single coincidental match further on just moves the spot.
+  if (solid.length >= 3 && solid.filter((e) => e.content).length >= 2) markRun(units.slice(a0, fs.u0), true);
   let matches = 0, content = 0, run = [];
   for (let k = fs.k; k <= ls.k; k++) {
     const o = ops[k];
@@ -157,14 +159,20 @@ export class Follower {
     this.hist = [{ t: performance.now() / 1000, p: this.pos }];
     this.lastRelocLen = -1;
     this.jumped = 0;
+    // trusted: how far the reader has really read. After an automatic jump it only moves once a few more
+    // words have been read past the landing spot, so a wrong jump never confirms anything.
+    this.trusted = this.pos; this.trustAfter = this.pos;
   }
 
   eff(u) { return this.prov && this.prov.has(u) ? this.prov.get(u) : this.status[u]; }
 
   setPos(p, jump) {
     const now = performance.now() / 1000;
-    if (jump) { this.hist = [{ t: now, p }]; this.jumped++; }
-    else if (p > this.pos) { this.hist.push({ t: now, p }); }
+    if (jump) { this.hist = [{ t: now, p }]; this.jumped++; this.trustAfter = p + 8; if (p < this.trusted) this.trusted = p; }
+    else {
+      if (p > this.pos) this.hist.push({ t: now, p });
+      if (p >= this.trustAfter && p > this.trusted) this.trusted = p;
+    }
     this.pos = p;
   }
 
@@ -184,6 +192,7 @@ export class Follower {
     this.anchor = u; this.segSkip = this.segLen; this.prov = null; this.off = false;
     if (clearAhead) this.status.fill(UNREAD, u);
     this.setPos(u, true);
+    this.trusted = u; this.trustAfter = u; // a jump you asked for is trusted right away
     this.onChange({ jump: true });
   }
 

@@ -10,6 +10,12 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 - **Listen**: tap a sentence to hear it read aloud (Settings: the sentence, the paragraph, or keep going continuously). **Read aloud / Pause** at the top starts or pauses from your spot; tapping the sentence being read also pauses. Speed goes up to ×2.5. The video follows the voice.
 - **Edit**: tap a paragraph to change it. Edited paragraphs get a small dot. **Files → Export** saves the edited script as .docx or .txt. The original file isn't changed.
 
+## Find, highlight and your own voice-over
+
+- **Find** (magnifier): type words from the script; matches are marked, ▲ ▼ step through them. Tap a match to read from there (or hear it, in Listen mode).
+- **Highlighter** (pen): pick a colour, tap the first word, then the last. The highlight is one continuous bar, saved with the script. The ✕ eraser removes a highlight you tap.
+- **My voice-over**: **Files → My voice-over → Add a recording** (WAV, MP3 or M4A of your finished read). The app finds every script word in it on this device (nothing is uploaded; a long recording takes a few minutes). In Listen mode, **My VO** plays your recording for each sentence it covers, with the guide following, and the chosen voice reads anything it doesn't cover. Add more recordings later (a pickup session, say): newer ones replace older ones where they overlap.
+
 ## Video
 
 - **Files → Add video** stores the video on the tablet with the script.
@@ -49,19 +55,19 @@ Without timestamps, the video is spread evenly across the whole script.
 ## Speech engines
 
 - **On tablet** (default): [Vosk](https://alphacephei.com/vosk/) running in the browser. Your voice never leaves the tablet. The first start downloads a 41 MB model once; after that it works offline, and the engine warms up a couple of seconds after the app opens so **Start** is quick (the mic stays off until you tap Start).
-- **Android speech (Google)**: Chrome's speech recognition, which is Google's. More accurate, but it sends audio to Google and usually needs internet.
+- **Online speech**: the browser's own speech recognition (Google in Chrome, Microsoft in Edge on a PC). Can be more accurate, but it sends audio to that service, needs internet, and can't save test recordings.
 
 The **Tablet mic** setting keeps Bluetooth earbuds out of phone-call mode.
 
 The mic pauses while Settings or Files is open, when the app loses focus, or when the screen goes off, and turns back on when you return if it was on. If the mic stops sending sound while you read (unplugged, or taken by another app), it restarts once on its own; if that doesn't help, it stops and says so.
 
-Switching to Android speech asks once first, because it sends audio of what you read to Google.
+Switching to online speech asks once first, because it sends audio of what you read to Google or Microsoft.
 
-**Save recordings** (off by default): while listening, the app also saves what the mic hears (WebM/Opus, about 0.5 MB a minute) plus a log of what it recognized and where it put you, one per listening stretch. **Files → Recordings** lists them; **Save** downloads a .zip of the audio and log for testing the app on real reads. On-tablet engine only. They hold your read of the script, so keep them private.
+**Save test recordings** (off by default): while listening, the app also saves what the mic hears (WebM/Opus, about 0.5 MB a minute) plus a log of what it recognized and where it put you, one per listening stretch. **Files → Test recordings** lists them; **Save** downloads a .zip of the audio and log for testing the app on real reads. On-tablet engine only. They hold your read of the script, so keep them private.
 
 ## Listen-mode voices
 
-- **Android voice**: the tablet's text-to-speech. Chrome on Android lists languages rather than voices; the voice used is the one picked in Android Settings (search "Text-to-speech", choose Speech Services by Google, then Install voice data → English (United States)).
+- **Device voice**: the system's text-to-speech. Chrome on Android lists languages rather than voices; the voice used is the one picked in Android Settings (search "Text-to-speech", choose Speech Services by Google, then Install voice data → English (United States)).
 - **Natural voices**: [Piper](https://github.com/rhasspy/piper) neural voices running on the tablet. Each downloads once (about 60 MB) from a fixed release of the Piper voice library, then works offline. Each sentence takes a moment to prepare.
 
 ## Mistake marks

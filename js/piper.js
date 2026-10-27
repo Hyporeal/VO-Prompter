@@ -138,9 +138,29 @@ export async function synth(voice, text, rate = 1) {
   return { pcm: out.output.data, sr: voice.config.audio.sample_rate };
 }
 
-// Same interface as the Android-voice Speaker in tts.js.
+// Long sentences are spoken in pieces (split after commas, semicolons and colons), so the first sound comes
+// sooner and slower devices can keep up. Each piece keeps its own word list for the guide.
+function splitChunk(c) {
+  const n = c.words.length;
+  if (n <= 10 || !c.starts) return [c];
+  const out = [];
+  let a = 0;
+  for (let i = 0; i < n; i++) {
+    const end = i + 1 < n ? c.starts[i + 1] : c.text.length;
+    const w = c.text.slice(c.starts[i], end).trim();
+    const breakHere = (/[,;:]["'”’)]*$/.test(w) && i - a + 1 >= 4 && n - i - 1 >= 3) || i - a + 1 >= 14;
+    if (breakHere || i === n - 1) {
+      const t0 = c.starts[a], t1 = end;
+      out.push({ text: c.text.slice(t0, t1).trim(), words: c.words.slice(a, i + 1), syl: c.syl.slice(a, i + 1), starts: c.starts.slice(a, i + 1).map((x) => x - t0), part: true });
+      a = i + 1;
+    }
+  }
+  return out;
+}
+
+// Same interface as the device-voice Speaker in tts.js.
 export class PiperSpeaker {
-  constructor() { this.gen = 0; this.busy = false; this.ctx = null; this.src = null; this.timer = null; }
+  constructor() { this.gen = 0; this.busy = false; this.ctx = null; this.src = null; this.timer = null; this.warm = null; }
   stop() {
     this.gen++;
     clearInterval(this.timer);
@@ -155,23 +175,38 @@ export class PiperSpeaker {
     let voice;
     try { voice = await loadVoice(opts.voiceId, cb.progress); } catch (e) { cb.error && cb.error(e.message || String(e)); finish(); return; }
     if (gen !== this.gen) return;
+    // the first run of a voice can come out garbled on some phones: synthesize a throwaway word first
+    if (!this.warm || this.warm.id !== voice.id) {
+      this.warm = { id: voice.id, p: synth(voice, 'Ready.', 1).catch(() => {}) };
+    }
     if (!this.ctx) this.ctx = new AudioContext({ latencyHint: 'playback' });
     try { await this.ctx.resume(); } catch (e) { /* ignore */ }
+    await this.warm.p;
+    if (gen !== this.gen) return;
     const rate = opts.rate || 1;
-    let next = synth(voice, chunks[0].text, rate);
-    for (let k = 0; k < chunks.length; k++) {
+    // pieces, with the sentence index each belongs to (cb.word reports the sentence index)
+    const pieces = [];
+    chunks.forEach((c, k) => { for (const p of splitChunk(c)) pieces.push({ ...p, k }); });
+    // keep up to two pieces being prepared ahead of the one playing
+    const pending = [];
+    const want = (i) => { while (pending.length <= i && pending.length < pieces.length) { const pc = pieces[pending.length]; pending.push(synth(voice, pc.text, rate)); } };
+    want(2);
+    let firstStart = true;
+    for (let k = 0; k < pieces.length; k++) {
+      const c = pieces[k];
+      cb.word && cb.word(c.words[0], c.k); // the guide moves on while the piece is still being prepared
       let res;
-      try { res = await next; } catch (e) { cb.error && cb.error('The voice couldn’t read that: ' + (e.message || e)); finish(); return; }
+      try { res = await pending[k]; } catch (e) { cb.error && cb.error('The voice couldn’t read that: ' + (e.message || e)); finish(); return; }
       if (gen !== this.gen) return;
-      if (k + 1 < chunks.length) next = synth(voice, chunks[k + 1].text, rate);
-      const c = chunks[k];
+      want(k + 2);
       const buf = this.ctx.createBuffer(1, res.pcm.length, res.sr);
       buf.copyToChannel(res.pcm, 0);
       const src = this.ctx.createBufferSource();
       src.buffer = buf; src.connect(this.ctx.destination);
       this.src = src;
-      const t0 = this.ctx.currentTime + 0.03;
-      const dur = buf.duration, lead = Math.min(0.15, dur * 0.05), speech = Math.max(0.1, dur - lead - 0.2);
+      const t0 = this.ctx.currentTime + (firstStart ? 0.12 : 0.02);
+      firstStart = false;
+      const dur = buf.duration, lead = Math.min(0.15, dur * 0.05), speech = Math.max(0.1, dur - lead - (c.part ? 0.1 : 0.2));
       const total = c.syl.reduce((a, b) => a + b, 0) || 1;
       let wi = -1;
       const onTick = () => {
@@ -180,7 +215,7 @@ export class PiperSpeaker {
         let acc = 0, i = 0;
         for (; i < c.syl.length; i++) { acc += c.syl[i]; if (acc / total > el / speech) break; }
         i = Math.max(0, Math.min(i, c.words.length - 1));
-        if (i !== wi) { wi = i; cb.word && cb.word(c.words[i], k); }
+        if (i !== wi) { wi = i; cb.word && cb.word(c.words[i], c.k); }
       };
       await new Promise((resolve) => {
         src.onended = resolve;

@@ -5,13 +5,14 @@ let dbp = null;
 function db() {
   if (!dbp) {
     dbp = new Promise((resolve, reject) => {
-      const r = indexedDB.open(DB_NAME, 1);
+      const r = indexedDB.open(DB_NAME, 2);
       r.onupgradeneeded = () => {
         const d = r.result;
         if (!d.objectStoreNames.contains('projects')) d.createObjectStore('projects', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('videos')) d.createObjectStore('videos', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('vo')) d.createObjectStore('vo', { keyPath: 'id' }); // your voice-over recordings (version 2)
       };
-      r.onsuccess = () => resolve(r.result);
+      r.onsuccess = () => { const d = r.result; d.onversionchange = () => { d.close(); dbp = null; }; resolve(d); };
       r.onerror = () => reject(r.error);
     });
   }
@@ -41,7 +42,15 @@ export const putProject = (p) => tx('projects', 'readwrite', (s) => { s.put(p); 
 export async function deleteProject(id) {
   await tx('projects', 'readwrite', (s) => { s.delete(id); });
   await tx('videos', 'readwrite', (s) => { s.delete(id); });
+  for (const v of await listVo(id)) await deleteVo(v.id);
 }
+// Voice-over recordings: { id, projectId, name, added, duration, blob, map: [unit, start, end, ...] }
+export async function listVo(projectId) {
+  const all = await tx('vo', 'readonly', (s) => req(s.getAll()));
+  return (all || []).filter((v) => v.projectId === projectId).sort((a, b) => a.added - b.added);
+}
+export const putVo = (v) => tx('vo', 'readwrite', (s) => { s.put(v); });
+export const deleteVo = (id) => tx('vo', 'readwrite', (s) => { s.delete(id); });
 export const putVideo = (id, file) => tx('videos', 'readwrite', (s) => { s.put({ id, name: file.name, type: file.type, blob: file }); });
 export const getVideo = (id) => tx('videos', 'readonly', (s) => req(s.get(id)));
 export const deleteVideo = (id) => tx('videos', 'readwrite', (s) => { s.delete(id); });

@@ -1,7 +1,7 @@
 // Network first, so updates arrive as soon as they're published; falls back to the last cached copy
 // when the tablet is offline. The speech model is cached separately by the app.
 const CACHE = 'vo-prompter-v2';
-const CORE = ['./', 'index.html', 'js/app.js', 'js/parse.js', 'js/zip.js', 'js/follow.js', 'js/engines.js', 'js/store.js', 'js/tts.js', 'js/piper.js',
+const CORE = ['./', 'index.html', 'js/app.js', 'js/parse.js', 'js/zip.js', 'js/follow.js', 'js/engines.js', 'js/store.js', 'js/tts.js', 'js/piper.js', 'js/vo.js',
   'capture-worklet.js', 'vendor/vosk.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
   'fonts/atkinson-hyperlegible-latin-400-normal.woff2', 'fonts/atkinson-hyperlegible-latin-700-normal.woff2',
   'fonts/jetbrains-mono-latin-400-normal.woff2', 'fonts/jetbrains-mono-latin-600-normal.woff2'];

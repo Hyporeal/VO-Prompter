@@ -5,14 +5,15 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
+import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.16';
+const VERSION = '1.1.17';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
   textSize: 28, said: 'hl', guide: 'under', span: 'word', overlap: 'some', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
 };
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
@@ -33,11 +34,15 @@ let tts = null;
 let editing = null;
 let videoURL = null;
 let wakeLock = null;
-let curTake = null; // the listening stretch being recorded (Settings → Save recordings)
+let curTake = null; // the listening stretch being recorded (Settings → Save test recordings)
+let findTok = new Uint8Array(0), findGroup = new Int32Array(0); // find: 1 = a match, 2 = the current match
+let hlTok = new Uint8Array(0), hlGroup = new Int32Array(0);     // your highlights: colour index per word
+let hlOn = false, hlStart = -1;
+let voTakes = [];                                               // your voice-over recordings for this script
 
 const follower = new Follower(onFollow);
-const speakers = { android: new Speaker(), piper: new PiperSpeaker() };
-const ttsBusy = () => speakers.android.busy || speakers.piper.busy;
+const speakers = { android: new Speaker(), piper: new PiperSpeaker(), vo: new VoSpeaker() };
+const ttsBusy = () => speakers.android.busy || speakers.piper.busy || speakers.vo.busy;
 function voiceChoice() {
   const v = settings.ttsVoice || 'android:';
   return v.startsWith('piper:') ? { kind: 'piper', voiceId: v.slice(6) } : { kind: 'android', voiceURI: v.slice(8) };
@@ -176,6 +181,9 @@ function renderDoc() {
   docEl.appendChild(frag);
   guideA = guideB = -1; lastFollowPos = follower.pos; lineMemo.slots = [];
   blockByPid = new Map(model.blocks.map((b) => [b.pid, b]));
+  findTok = new Uint8Array(T); findGroup = new Int32Array(T);
+  buildHlTok();
+  if (findState.q) runFind(findState.q, false);
   updateClasses();
   paint();
 }
@@ -314,6 +322,10 @@ function paint() {
       if (cur.skip) c += ' skip';
       if (cur.maybe && cur.said) c += ' maybe';
       if (t >= guideA && t <= guideB) c += ' next';
+      const fd = findTok[t], hl = hlTok[t];
+      if (fd) c += fd === 2 ? ' found-cur' : ' found';
+      else if (hl) c += ' hl-' + HL_KEYS[hl];
+      if (t === hlStart) c += ' hl-start';
       let inTts = false;
       if (tts) { inTts = t >= tts.t0 && t < tts.t1; if (inTts) c += ' tts-sent'; if (t === tts.cur) c += ' tts-word'; }
       if (c !== tokCls[t]) { el.className = c; tokCls[t] = c; }
@@ -323,6 +335,8 @@ function paint() {
         if (sentMode) { const si = model.tokens[t].sent; if (si >= 0 && sentDone(si)) gc += ' done'; }
         else if (cur.said && next && next.said) gc += ' said';
         if ((t >= guideA && t < guideB) || (t === guideB && /\S/.test(g.textContent))) gc += ' next'; // a dash after the guided word goes with it
+        if (fd && t + 1 < T && findTok[t + 1] === fd && findGroup[t] === findGroup[t + 1]) gc += fd === 2 ? ' found-cur' : ' found';
+        else if (hl && t + 1 < T && hlTok[t + 1] === hl && hlGroup[t] === hlGroup[t + 1]) gc += ' hl-' + HL_KEYS[hl];
         if (inTts && t + 1 < tts.t1) gc += ' tts-sent';
         if (gc !== gapCls[t]) { g.className = gc; gapCls[t] = gc; }
       }
@@ -555,7 +569,7 @@ async function startListening() {
   if (gen !== startGen) { eng.stop(); return; } // stopped or paused while starting
   engine = eng;
   micBusy = false; listening = true;
-  if (settings.saveTakes && !eng.recorder) toast(settings.engine === 'google' ? 'Recordings work with the on-tablet engine only.' : 'Recording didn’t start: ' + (eng.recError || 'not supported here') + '. Listening works as usual.', 6000);
+  if (settings.saveTakes && !eng.recorder) toast(settings.engine === 'google' ? 'Recordings work with the on-device engine only.' : 'Recording didn’t start: ' + (eng.recError || 'not supported here') + '. Listening works as usual.', 6000);
   follower.commit(); follower.anchor = follower.pos; follower.segSkip = 0; follower.segLen = 0;
   setFollow(true);
   renderMic(); wantAwake();
@@ -602,6 +616,23 @@ function clearVideo() {
   if (model) model.times = computeTimes(model, NaN);
   layout();
 }
+// If this device can't show the video's picture (it plays on but no frames are drawn), say so once.
+let vidCheck = null;
+function checkVideoFrames() {
+  clearTimeout(vidCheck);
+  vidCheck = setTimeout(() => {
+    if (!hasVideo()) return;
+    const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    const bad = video.error || !video.videoWidth || (q && q.totalVideoFrames === 0 && video.currentTime > 0.5 && !video.paused);
+    if (bad) {
+      const why = video.error ? 'error ' + video.error.code + (video.error.message ? ': ' + video.error.message : '') : !video.videoWidth ? 'no picture size' : 'no frames drawn';
+      noteError('video: ' + why);
+      toast('This device isn’t showing the video’s picture (' + why + '). Timing still works. Copy diagnostics in Settings and send them over.', 8000);
+    }
+  }, 6000);
+}
+video.addEventListener('error', () => { noteError('video error ' + (video.error && video.error.code)); checkVideoFrames(); });
+video.addEventListener('playing', checkVideoFrames);
 video.addEventListener('loadedmetadata', () => {
   layout();
   if (model) model.times = computeTimes(model, video.duration);
@@ -707,7 +738,8 @@ function tick() {
   if (d.rate > 0) p += Math.min(2.5, d.rate * (now - d.lastT));
   const target = timeAt(model.times, p);
   const err = target - video.currentTime;
-  if (err > 30 || err < -4) { video.currentTime = target; vRate = 0; return; }
+  // phones' video decoders can't keep up much past ×4 (the picture goes black), so a big gap is a jump instead
+  if (err > 12 || err < -4) { video.currentTime = target; vRate = 0; return; }
   const slope = timeAt(model.times, p + 1) - timeAt(model.times, p);
   const desired = slope * d.rate + err / 1.2;
   vRate += (desired - vRate) * Math.min(1, dt / 0.35);
@@ -717,7 +749,7 @@ function tick() {
     if (lastRateShown) { $('#vRate').hidden = true; lastRateShown = ''; }
     return;
   }
-  const r = Math.max(0.25, Math.min(16, vRate));
+  const r = Math.max(0.25, Math.min(4, vRate));
   if (Math.abs(r - video.playbackRate) > video.playbackRate * 0.04) video.playbackRate = r;
   if (video.paused) video.play().catch(() => {});
   const label = '×' + (r < 10 ? r.toFixed(1) : Math.round(r));
@@ -796,7 +828,7 @@ window.addEventListener('resize', () => { layout(); clearTimeout(layoutTimer); l
 // ---------- listen mode (TTS) ----------
 function stopTTS() {
   if (!tts && !ttsBusy()) return;
-  speakers.android.stop(); speakers.piper.stop();
+  speakers.android.stop(); speakers.piper.stop(); speakers.vo.stop();
   closeLoad();
   setTimeout(renderSpeak, 0);
   tts = null;
@@ -832,7 +864,10 @@ function speakFrom(ti) {
   tts = { t0: ranges[0][0], t1: ranges[0][1], ranges, cur: -1, tracker: new RateTracker() };
   follower.jumpTo(model.tokens[tts.t0].u0, false);
   if (hasVideo()) { setFollow(true); }
-  speakers[vc.kind].speak(items.map((x) => x.chunk), { ...vc, rate: settings.ttsRate }, ttsCallbacks({
+  const useVo = settings.useMyVo && voTakes.length;
+  const spk = useVo ? speakers.vo : speakers[vc.kind];
+  const sopts = useVo ? { takes: voTakes, model, rate: settings.ttsRate, fallback: { speaker: speakers[vc.kind], opts: { ...vc, rate: settings.ttsRate } } } : { ...vc, rate: settings.ttsRate };
+  spk.speak(items.map((x) => x.chunk), sopts, ttsCallbacks({
     word: (t, k) => {
       if (!tts) return;
       const r = tts.ranges[k];
@@ -853,6 +888,8 @@ function pauseTTS() {
 function renderSpeak() {
   const b = $('#btnSpeak');
   b.hidden = mode !== 'listen';
+  $('#btnMine').hidden = mode !== 'listen' || !voTakes.length;
+  $('#btnMine').setAttribute('aria-pressed', settings.useMyVo ? 'true' : 'false');
   const on = !!tts && ttsBusy();
   b.classList.toggle('on', on);
   $('#speakLbl').textContent = on ? 'Pause' : 'Read aloud';
@@ -956,6 +993,7 @@ function rebuild() {
   model = buildModel(project.paras.map((p) => ({ ...p })), hasVideo() ? video.duration : NaN);
   const r = restore(model, snap);
   follower.setModel(model, r.status, r.pos);
+  remapVo();
   renderDoc();
   saveProject();
 }
@@ -980,11 +1018,13 @@ async function loadProject(p) {
   follower.setModel(model, r.status, r.pos);
   $('#title').textContent = p.name;
   document.title = p.name + ' · VO Prompter';
+  if (!Array.isArray(p.hl)) p.hl = [];
   renderDoc();
+  loadVo();
   clearVideo();
   if (p.videoName) {
     try { const v = await store.getVideo(p.id); if (v && v.blob) setVideoSrc(v.blob); } catch (e) { /* missing */ }
-    if (!hasVideo()) toast('The video for this script isn’t on the tablet anymore. Add it again in Files.');
+    if (!hasVideo()) toast('The video for this script isn’t on this device anymore. Add it again in Files.');
   }
   requestAnimationFrame(() => scrollToCurrent(true));
 }
@@ -999,7 +1039,7 @@ async function openScriptFile(file) {
     paras: paras.map((text, i) => ({ id: 'a' + i, text })), orig: {}, pos: null, status: {}, videoName: null, updated: Date.now(),
   };
   p.paras.forEach((x) => { p.orig[x.id] = x.text; });
-  try { await store.putProject(p); } catch (e) { toast('Couldn’t save the script on the tablet; it will work until you close the app.'); }
+  try { await store.putProject(p); } catch (e) { toast('Couldn’t save the script on this device; it will work until you close the app.'); }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   await loadProject(p);
   const m = model;
@@ -1012,7 +1052,7 @@ async function openVideoFile(file) {
   project.videoName = file.name;
   saveProject();
   try { await store.putVideo(project.id, file); }
-  catch (e) { toast('Couldn’t keep the video on the tablet; you’ll need to add it again next time.', 5000); }
+  catch (e) { toast('Couldn’t keep the video on this device; you’ll need to add it again next time.', 5000); }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   renderFiles();
 }
@@ -1034,7 +1074,7 @@ async function fillProjectList(el) {
     open.disabled = !!(project && project.id === it.id);
     open.onclick = async () => { const p = await store.getProject(it.id); if (p) { $('#dlgFiles').close(); loadProject(p); } };
     const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
-    del.onclick = () => confirmDo('Delete this script?', `“${it.name}”, its edits and its video will be removed from the tablet.`, 'Delete', async () => {
+    del.onclick = () => confirmDo('Delete this script?', `“${it.name}”, its edits and its video will be removed from this device.`, 'Delete', async () => {
       await store.deleteProject(it.id);
       if (project && project.id === it.id) { stopListening(); stopTTS(); project = null; model = null; clearVideo(); $('#title').textContent = 'No script open'; renderDoc(); }
       fillProjectList(el);
@@ -1088,6 +1128,7 @@ docEl.addEventListener('click', (e) => {
   if (!w) return;
   const ti = +w.dataset.t;
   const tok = model.tokens[ti];
+  if (hlOn) { hlTap(ti); return; }
   if (mode === 'listen') { speakFrom(ti); return; }
   // read mode: jump the reading spot and the video
   const wasPlaying = hasVideo() && !video.paused && !follow;
@@ -1155,6 +1196,218 @@ function confirmDo(title, text, yes, fn) {
 $('#cYes').onclick = async () => { $('#dlgConfirm').close(); const f = confirmFn; confirmFn = null; if (f) await f(); };
 $('#cNo').onclick = () => { confirmFn = null; $('#dlgConfirm').close(); };
 
+// ---------- find ----------
+// Matches whole words in order; the last word you type may be partial. Tap a match to read (or hear) from there.
+const findState = { q: '', hits: [], cur: -1 };
+const normWord = (s) => s.toLowerCase().replace(/[’']/g, '').replace(/[^a-z0-9]/g, '');
+function runFind(q, jump = true) {
+  findState.q = q;
+  if (!model) return;
+  const T = model.tokens.length;
+  const old = findTok;
+  findTok = new Uint8Array(T); findGroup = new Int32Array(T);
+  const qs = q.split(/\s+/).map(normWord).filter(Boolean);
+  const hits = [];
+  if (qs.length) {
+    const words = [];
+    for (let t = 0; t < T; t++) { const n = normWord(model.tokens[t].text); if (n) words.push([t, n]); }
+    for (let i = 0; i + qs.length <= words.length; i++) {
+      let ok = true;
+      for (let k = 0; k < qs.length && ok; k++) ok = k === qs.length - 1 ? words[i + k][1].startsWith(qs[k]) : words[i + k][1] === qs[k];
+      if (ok) hits.push([words[i][0], words[i + qs.length - 1][0]]);
+    }
+  }
+  findState.hits = hits;
+  if (findState.cur >= hits.length || findState.cur < 0) findState.cur = hits.length ? 0 : -1;
+  if (jump && hits.length) {
+    // start from the first match at or after where you are
+    const here = model.units[Math.min(follower.pos, model.N - 1)].ti;
+    const i = hits.findIndex((h) => h[0] >= here);
+    findState.cur = i >= 0 ? i : 0;
+  }
+  hits.forEach(([a, b], i) => { for (let t = a; t <= b; t++) { findTok[t] = i === findState.cur ? 2 : 1; findGroup[t] = i + 1; } });
+  for (let t = 0; t < Math.min(old.length, T); t++) if (old[t] !== findTok[t]) markDirtyTokens(t - 1, t + 1);
+  if (old.length !== T) updateClasses();
+  $('#findCount').textContent = !qs.length ? '' : hits.length ? `${findState.cur + 1} of ${hits.length}` : 'Not found';
+  if (jump) showFindCur();
+}
+function showFindCur() {
+  const h = findState.hits[findState.cur];
+  if (!h || !tokEls[h[0]]) return;
+  userScrollUntil = performance.now() + 60000; // keep the page where the match is while you look
+  const el = tokEls[h[0]], sr = scriptEl.getBoundingClientRect(), r = el.getBoundingClientRect();
+  smoothScrollTo(scriptEl.scrollTop + r.top - sr.top - settings.textSize * 1.5 * Math.min(3, settings.linesAbove), 300);
+}
+function stepFind(d) {
+  const n = findState.hits.length;
+  if (!n) return;
+  findState.cur = (findState.cur + d + n) % n;
+  runFind(findState.q, false);
+  showFindCur();
+}
+function openFind() {
+  if (hlOn) closeHl();
+  pauseMic('find'); pauseTTS();
+  $('#findBar').hidden = false; layout();
+  $('#findIn').focus(); $('#findIn').select();
+  if (findState.q) runFind(findState.q, true);
+}
+function closeFind() {
+  $('#findBar').hidden = true; layout();
+  findState.q = ''; findState.hits = []; findState.cur = -1;
+  if (findTok.some((x) => x)) { findTok.fill(0); updateClasses(); }
+  userScrollUntil = 0;
+  resumeMic('find');
+}
+$('#btnFind').onclick = () => ($('#findBar').hidden ? openFind() : closeFind());
+$('#findIn').oninput = (e) => runFind(e.target.value, true);
+$('#findIn').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); } else if (e.key === 'Escape') closeFind(); };
+$('#findNext').onclick = () => stepFind(1);
+$('#findPrev').onclick = () => stepFind(-1);
+$('#findClose').onclick = closeFind;
+
+// ---------- highlighter ----------
+// Like a highlighter pen: pick a colour, tap the first word, then the last. Highlights are saved with the
+// script (by paragraph, so editing one paragraph leaves the others alone). The eraser removes a highlight you tap.
+const HL_KEYS = ['', 'y', 'g', 'b', 'p', 'o'];
+function buildHlTok() {
+  if (!model) return;
+  const T = model.tokens.length;
+  hlTok = new Uint8Array(T); hlGroup = new Int32Array(T);
+  ((project && project.hl) || []).forEach((h, i) => {
+    const b = blockByPid.get(h.pid);
+    if (!b || b.t1 <= b.t0) return;
+    const ci = HL_KEYS.indexOf(h.c);
+    for (let t = Math.max(b.t0, b.t0 + h.a); t <= Math.min(b.t1 - 1, b.t0 + h.b); t++) { hlTok[t] = ci > 0 ? ci : 1; hlGroup[t] = i + 1; }
+  });
+}
+function hlRangeAt(t) {
+  const pid = model.tokens[t].pid, b = blockByPid.get(pid);
+  return (project.hl || []).findIndex((h) => h.pid === pid && t - b.t0 >= h.a && t - b.t0 <= h.b);
+}
+// clear [t0, t1] from existing highlights (splitting any that run past it), then optionally add the new one
+function hlApply(t0, t1, c) {
+  const out = [];
+  for (const h of project.hl) {
+    const b = blockByPid.get(h.pid);
+    if (!b) { out.push(h); continue; }
+    const a = b.t0 + h.a, z = b.t0 + h.b;
+    if (z < t0 || a > t1) { out.push(h); continue; }
+    if (a < t0) out.push({ ...h, b: t0 - 1 - b.t0 });
+    if (z > t1) out.push({ ...h, a: t1 + 1 - b.t0 });
+  }
+  if (c) {
+    // one entry per paragraph the range touches
+    let t = t0;
+    while (t <= t1) {
+      const pid = model.tokens[t].pid, b = blockByPid.get(pid);
+      const end = Math.min(t1, b.t1 - 1);
+      out.push({ pid, a: t - b.t0, b: end - b.t0, c });
+      t = end + 1;
+    }
+  }
+  project.hl = out;
+  buildHlTok(); updateClasses(); saveProject();
+}
+function hlTap(t) {
+  if (settings.hlColor === 'x') {
+    const i = hlRangeAt(t);
+    if (i >= 0) { const h = project.hl[i], b = blockByPid.get(h.pid); hlApply(b.t0 + h.a, b.t0 + h.b, null); }
+    return;
+  }
+  if (hlStart < 0) { hlStart = t; markDirtyTokens(t, t); $('#hlNote').textContent = 'Now tap the last word.'; return; }
+  const a = Math.min(hlStart, t), z = Math.max(hlStart, t);
+  markDirtyTokens(hlStart, hlStart); hlStart = -1;
+  $('#hlNote').textContent = 'Tap the first word, then the last.';
+  hlApply(a, z, settings.hlColor);
+}
+function renderHlBar() {
+  for (const sw of document.querySelectorAll('#hlBar .sw')) sw.setAttribute('aria-pressed', sw.dataset.c === settings.hlColor ? 'true' : 'false');
+  $('#hlNote').textContent = settings.hlColor === 'x' ? 'Tap a highlight to remove it.' : hlStart >= 0 ? 'Now tap the last word.' : 'Tap the first word, then the last.';
+}
+function openHl() {
+  if (!model) { toast('Open a script first.'); return; }
+  if (mode === 'edit') setMode('read');
+  if (!$('#findBar').hidden) closeFind();
+  hlOn = true; hlStart = -1;
+  pauseMic('highlight'); pauseTTS();
+  $('#hlBar').hidden = false; $('#btnHl').setAttribute('aria-pressed', 'true'); layout();
+  renderHlBar();
+}
+function closeHl() {
+  if (hlStart >= 0) { markDirtyTokens(hlStart, hlStart); hlStart = -1; }
+  hlOn = false;
+  $('#hlBar').hidden = true; $('#btnHl').setAttribute('aria-pressed', 'false'); layout();
+  resumeMic('highlight');
+}
+$('#btnHl').onclick = () => (hlOn ? closeHl() : openHl());
+$('#hlDone').onclick = closeHl;
+for (const sw of document.querySelectorAll('#hlBar .sw')) sw.onclick = () => { settings.hlColor = sw.dataset.c; saveSettings(); if (hlStart >= 0 && sw.dataset.c === 'x') { markDirtyTokens(hlStart, hlStart); hlStart = -1; } renderHlBar(); };
+
+// ---------- my voice-over ----------
+function revokeVo() { for (const v of voTakes) URL.revokeObjectURL(v.url); voTakes = []; }
+async function loadVo() {
+  revokeVo();
+  if (!project) return;
+  let list = [];
+  try { list = await store.listVo(project.id); } catch (e) { /* storage */ }
+  voTakes = list.filter((r) => r.blob && r.words).map((r) => ({ id: r.id, name: r.name, added: r.added, duration: r.duration, words: r.words, url: URL.createObjectURL(r.blob), times: mapRecording(model, r.words) }));
+  renderSpeak();
+  if ($('#dlgFiles').open) renderVo();
+}
+function remapVo() { for (const v of voTakes) v.times = mapRecording(model, v.words); }
+function renderVo() {
+  const el = $('#voList');
+  el.textContent = '';
+  $('#fAddVo').disabled = !project;
+  if (!voTakes.length) { el.innerHTML = '<p class="note">None yet.</p>'; return; }
+  for (const v of [...voTakes].reverse()) {
+    const cv = coverage(model, v.times);
+    const row = document.createElement('div'); row.className = 'proj-item';
+    const t = document.createElement('div'); t.className = 't';
+    t.textContent = v.name;
+    const sm = document.createElement('small');
+    sm.textContent = `${new Date(v.added).toLocaleString()} · ${Math.round(v.duration / 60)} min · ` + (cv.firstSent >= 0 ? `sentences ${cv.firstSent + 1}–${cv.lastSent + 1} (${Math.round(cv.frac * 100)}% of the script)` : 'no script words found');
+    t.appendChild(sm);
+    const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
+    del.onclick = () => confirmDo('Delete this recording?', `“${v.name}” will be removed from this device. Your file elsewhere isn’t touched.`, 'Delete', async () => { await store.deleteVo(v.id); await loadVo(); renderVo(); });
+    row.append(t, del);
+    el.appendChild(row);
+  }
+}
+async function addVoFile(file) {
+  if (!project || !model) return;
+  stopListening(); stopTTS(); resumeWanted = false;
+  let cancelled = false;
+  openLoad('Finding your words in the recording', 'This runs on this device (nothing is uploaded) and can take a few minutes for a long recording. Keep the app open.');
+  $('#lHide').textContent = 'Cancel';
+  const onCancel = () => { cancelled = true; };
+  $('#lHide').addEventListener('click', onCancel, { once: true });
+  try {
+    const eng = engineFor('device');
+    const m = await eng.load((p) => { if (p.phase === 'download') { $('#lText').textContent = 'Getting the speech model first (one-time, 41 MB)…'; $('#lBar').style.width = Math.round(p.frac * 100) + '%'; } });
+    $('#lText').textContent = 'Listening through the recording… (this device does the work; keep the app open)';
+    const res = await recognizeFile(file, m, (f) => { $('#lBar').style.width = Math.round(f * 100) + '%'; }, () => cancelled);
+    const times = mapRecording(model, res.words);
+    const cv = coverage(model, times);
+    if (cv.firstSent < 0) { closeLoad(); toast('Couldn’t find this script in that recording.', 6000); return; }
+    await store.putVo({ id: newId(), projectId: project.id, name: file.name, added: Date.now(), duration: res.duration, blob: file, words: res.words });
+    await loadVo();
+    closeLoad();
+    toast(`Added: sentences ${cv.firstSent + 1}–${cv.lastSent + 1}. In Listen mode, My VO plays it.`, 6000);
+    if ($('#dlgFiles').open) renderVo();
+  } catch (e) {
+    closeLoad();
+    if (!cancelled) { noteError('vo: ' + (e.message || e)); toast('Couldn’t add the recording: ' + (e.message || e), 7000); }
+  } finally {
+    $('#lHide').textContent = 'Hide (keeps downloading)';
+    $('#lHide').removeEventListener('click', onCancel);
+  }
+}
+$('#fAddVo').onclick = () => $('#fileVo').click();
+$('#fileVo').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) addVoFile(f); };
+$('#btnMine').onclick = () => { settings.useMyVo = !settings.useMyVo; saveSettings(); const was = tts && ttsBusy(); if (was) pauseTTS(); renderSpeak(); toast(settings.useMyVo ? 'Listen plays your voice-over where you have one.' : 'Listen uses the chosen voice.', 2200); };
+
 // ---------- test recordings ----------
 // With Settings → Save recordings on, each listening stretch is also saved as audio plus a log of what the app
 // heard and where it put you, to test the app on real reads. Kept on the tablet (Files → Recordings) until saved.
@@ -1177,7 +1430,7 @@ function newTake() {
     note: 'events: [ms after recording started, recognized text, final (1) or partial (0), reading spot (word unit) after it]', events: take.events }), 'application/json');
   take.onStart = (type) => { take.t0 = performance.now(); take.type = type; curTake = take; renderMic(); writeLog(); };
   take.onData = (blob, type) => { take.type = type; write('.part' + String(take.n++).padStart(5, '0'), blob, type); if (take.n % 3 === 0) writeLog(); };
-  take.onStop = () => { writeLog(); take.chain.then(() => { if (!take.failed) toast('Recording saved (Files → Recordings).'); if ($('#dlgFiles').open) renderTakes(); }); };
+  take.onStop = () => { writeLog(); take.chain.then(() => { if (!take.failed) toast('Test recording saved (Files → Test recordings).'); if ($('#dlgFiles').open) renderTakes(); }); };
   return take;
 }
 const takeExt = (type) => /mp4/.test(type) ? 'm4a' : /ogg/.test(type) ? 'ogg' : 'webm';
@@ -1200,7 +1453,7 @@ async function renderTakes() {
   const list = await listTakes();
   el.textContent = '';
   $('#fTakesAll').hidden = !list.length;
-  if (!list.length) { el.innerHTML = '<p class="note">None yet. Turn on Settings → Save recordings, then read as usual; Start shows “Listening · rec” while it records.</p>'; return; }
+  if (!list.length) { el.innerHTML = '<p class="note">None yet. Turn on Settings → Save test recordings, then read as usual; Start shows “Listening · rec” while it records.</p>'; return; }
   for (const it of list) {
     let size = 0, type = '';
     for (const p of it.parts) { const res = await it.c.match(p.r); if (res) { const bl = await res.blob(); size += bl.size; type = type || bl.type; } }
@@ -1229,7 +1482,7 @@ async function renderTakes() {
     el.appendChild(row);
   }
 }
-$('#fTakesAll').onclick = () => confirmDo('Delete all recordings?', 'Every saved recording and its log will be removed from the tablet.', 'Delete all', async () => { try { await caches.delete(TAKES); } catch (e) { /* ignore */ } renderTakes(); });
+$('#fTakesAll').onclick = () => confirmDo('Delete all recordings?', 'Every saved recording and its log will be removed from this device.', 'Delete all', async () => { try { await caches.delete(TAKES); } catch (e) { /* ignore */ } renderTakes(); });
 
 function renderFiles() {
   const has = !!project;
@@ -1239,12 +1492,13 @@ function renderFiles() {
   $('#fVideoNote').textContent = !has ? 'Open a script first.' : project.videoName ? `Video: ${project.videoName}` : 'No video. Add the video the script’s timestamps refer to.';
   for (const id of ['#fExportDocx', '#fExportTxt', '#fClearMarks']) $(id).disabled = !has;
   fillProjectList($('#projList'));
+  renderVo();
   renderTakes();
 }
 $('#btnFiles').onclick = () => { pauseMic('dialog'); renderFiles(); $('#dlgFiles').showModal(); };
 $('#fOpenScript').onclick = () => $('#fileScript').click();
 $('#fOpenVideo').onclick = () => $('#fileVideo').click();
-$('#fRemoveVideo').onclick = () => confirmDo('Remove the video?', 'The video is removed from this script on the tablet. Your file elsewhere isn’t touched.', 'Remove', async () => {
+$('#fRemoveVideo').onclick = () => confirmDo('Remove the video?', 'The video is removed from this script on this device. Your file elsewhere isn’t touched.', 'Remove', async () => {
   await store.deleteVideo(project.id); project.videoName = null; clearVideo(); saveProject(); renderFiles();
 });
 $('#fileScript').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { $('#dlgFiles').open && $('#dlgFiles').close(); openScriptFile(f); } };
@@ -1271,10 +1525,10 @@ function ttsCallbacks(cb) {
 function fillVoices() {
   const sel = $('#selVoice');
   sel.textContent = '';
-  const ga = document.createElement('optgroup'); ga.label = 'Android voice';
-  const def = document.createElement('option'); def.value = 'android:'; def.textContent = 'Android voice (set in Android settings)'; ga.appendChild(def);
+  const ga = document.createElement('optgroup'); ga.label = 'Device voice';
+  const def = document.createElement('option'); def.value = 'android:'; def.textContent = 'Device voice (set in your system settings)'; ga.appendChild(def);
   for (const v of englishVoices()) { const o = document.createElement('option'); o.value = 'android:' + v.voiceURI; o.textContent = `${v.name}${v.localService ? '' : ' (online)'}`; ga.appendChild(o); }
-  const gp = document.createElement('optgroup'); gp.label = 'Natural voices (on tablet)';
+  const gp = document.createElement('optgroup'); gp.label = 'Natural voices (run in the app)';
   for (const v of PIPER_VOICES) {
     const o = document.createElement('option'); o.value = 'piper:' + v.id; o.textContent = v.name; gp.appendChild(o);
     voiceIsDownloaded(v.id).then((d) => { if (d) o.textContent = v.name + ' ✓'; });
@@ -1282,8 +1536,8 @@ function fillVoices() {
   sel.append(ga, gp);
   sel.value = [...sel.options].some((o) => o.value === settings.ttsVoice) ? settings.ttsVoice : 'android:';
   $('#voiceNote').textContent = voiceChoice().kind === 'piper'
-    ? 'Natural voice: runs on the tablet. Downloads once (about 60 MB, ✓ = already on the tablet), then works offline. Each sentence takes a moment to prepare.'
-    : 'Android voice: Chrome on Android lists languages, not voices. The voice it uses is the one picked in Android Settings: search “Text-to-speech”, choose Speech Services by Google, then its settings → Install voice data → English (United States) to pick or download a higher-quality voice.';
+    ? 'Natural voice: runs in the app on this device. Downloads once (about 60 MB, ✓ = already downloaded), then works offline. Needs a fast device; on phones the device voice is usually smoother.'
+    : 'Device voice: your system’s text-to-speech. On Android, the voice is the one picked in system Settings (search “Text-to-speech”); on Windows, Mac and iPad, pick one from the list.';
 }
 if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', fillVoices);
 
@@ -1297,8 +1551,8 @@ async function syncSettingsUI() {
   $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery); $('#selMarkStr').value = settings.markStrength;
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
   $('#engineNote').textContent = settings.engine === 'google'
-    ? 'Android speech: Chrome’s speech recognition, which is Google’s. More accurate than the on-tablet engine, but it sends your audio to Google and usually needs internet.'
-    : 'On tablet: your voice stays on the tablet and it works offline. The first start downloads a 41 MB speech model once.';
+    ? 'Online speech: your browser’s own speech recognition (Google in Chrome, Microsoft in Edge on a PC). Can be more accurate, but it sends your audio to that service, needs internet, and can’t save recordings.'
+    : 'On this device: your voice stays on this device and it works offline. The first start downloads a 41 MB speech model once.';
   fillVoices();
   const cached = await modelIsCached();
   $('#aboutLine').textContent = `VO Prompter ${VERSION} · speech model ${cached ? 'downloaded' : 'not downloaded yet'}`;
@@ -1315,7 +1569,7 @@ $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on';
 for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
   $(id).onchange = (e) => { const v = e.target.value; settings[key] = /^\d+$/.test(v) ? +v : v; saveSettings(); scrollToCurrent(true); };
 }
-// Android speech sends audio to Google, so it asks once before switching (client scripts are often confidential).
+// Online speech sends audio to Google/Microsoft, so it asks once before switching (client scripts are often confidential).
 $('#selEngine').onchange = (e) => {
   const v = e.target.value;
   const apply = () => {
@@ -1325,7 +1579,7 @@ $('#selEngine').onchange = (e) => {
   };
   if (v === 'google' && !settings.googleOk) {
     e.target.value = settings.engine;
-    confirmDo('Send audio to Google?', 'Android speech sends what the mic hears to Google to turn it into text, so the script you read leaves the tablet. The on-tablet engine keeps everything here. Use Android speech anyway?', 'Use Android speech', apply);
+    confirmDo('Send audio online?', 'Online speech sends what the mic hears to your browser’s speech service (Google or Microsoft) to turn it into text, so the script you read leaves this device. The on-device engine keeps everything here. Use online speech anyway?', 'Use online speech', apply);
   } else apply();
 };
 bindSel('#selMic', 'micSource', () => { if (listening) { stopListening(); startListening(); } });
@@ -1335,13 +1589,13 @@ $('#sRate').onchange = saveSettings;
 $('#btnTestVoice').onclick = () => {
   const vc = voiceChoice();
   if (vc.kind === 'android' && !Speaker.supported()) { toast('This browser can’t read text aloud.'); return; }
-  speakers.android.stop(); speakers.piper.stop();
+  speakers.android.stop(); speakers.piper.stop(); speakers.vo.stop();
   speakers[vc.kind].speak([{ text: 'This is how the voice sounds at this speed.', starts: [0], words: [-1], syl: [12] }], { ...vc, rate: settings.ttsRate },
     ttsCallbacks({ end: () => syncSettingsUI() }));
 };
 
 // ---------- uninstall ----------
-$('#btnWipe').onclick = () => confirmDo('Remove all app data?', 'Deletes every script, edit, video and setting from this tablet, plus the downloaded speech model and voices. This can’t be undone.', 'Remove everything', async () => {
+$('#btnWipe').onclick = () => confirmDo('Remove all app data?', 'Deletes every script, edit, video, recording and setting from this device, plus the downloaded speech model and voices. This can’t be undone.', 'Remove everything', async () => {
   $('#dlgSettings').close();
   stopListening(); stopTTS();
   for (const k of Object.keys(engines)) { try { engines[k].unload(); } catch (e) { /* ignore */ } }
@@ -1351,7 +1605,7 @@ $('#btnWipe').onclick = () => confirmDo('Remove all app data?', 'Deletes every s
   try { localStorage.clear(); sessionStorage.clear(); } catch (e) { /* ignore */ }
   try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch (e) { /* ignore */ }
   document.body.innerHTML = `<div class="gone"><h1>App data removed</h1>
-    <p class="note">Everything VO Prompter stored on this tablet is gone. To remove the app icon too:</p>
+    <p class="note">Everything VO Prompter stored on this device is gone. To remove the app icon too:</p>
     <ol><li>Long-press the VO Prompter icon on the home screen.</li><li>Tap <b>Uninstall</b> (or <b>App info</b> → <b>Uninstall</b>).</li></ol>
     <p class="note">If you only used it in a browser tab, just close the tab.</p>
     <div class="btns"><button class="btn" onclick="location.reload()">Start fresh instead</button></div></div>`;
@@ -1386,6 +1640,7 @@ $('#btnDiag').onclick = async () => {
     `Script: ${model ? `${model.N} words, ${model.blocks.length} paragraphs, ${model.anchors.length} timestamps` : 'none'} · video: ${hasVideo() ? 'yes' : 'no'}`,
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
+    `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   const btn = $('#btnDiag');

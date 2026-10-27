@@ -96,7 +96,7 @@ async function resetCallMode() {
 
 export class OnDeviceEngine {
   constructor(cb) { this.cb = cb; this.model = null; this.loading = null; this.active = false; }
-  get name() { return 'On tablet'; }
+  get name() { return 'On this device'; }
   async load(onProgress) {
     if (this.model) return this.model;
     if (this.loading) return this.loading;

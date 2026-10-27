@@ -1,0 +1,3 @@
+vosk-model-small-en-us-0.15.tar.gz is the official Vosk small US English model by Alpha Cephei Inc.,
+from https://alphacephei.com/vosk/models, repackaged unchanged as .tar.gz for the browser.
+Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0

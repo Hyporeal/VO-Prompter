@@ -1,0 +1,3 @@
+vosk.js is vosk-browser 0.0.8 by Ciaran O'Reilly, https://github.com/ccoreilly/vosk-browser
+Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+It includes a WebAssembly build of Vosk (https://github.com/alphacep/vosk-api, Apache-2.0) and Kaldi (Apache-2.0).

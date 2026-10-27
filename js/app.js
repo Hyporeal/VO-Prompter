@@ -5,13 +5,13 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.1';
+const VERSION = '1.1.2';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
   textSize: 28, said: 'hl', guide: 'under', span: 'word', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, markStrength: 'faint', textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, markStrength: 'faint', offNotice: 'off', textFrac: null, sideFrac: null, lastProject: null,
 };
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
@@ -343,7 +343,6 @@ function onFollow(e) {
     if (s0) markDirtyTokens(s0.t0, model.units[u].ti + 1);
   }
   lastFollowPos = follower.pos;
-  $('#offScript').hidden = !(listening && follower.off);
   if (e && e.jump && listening) {
     const at = follower.pos;
     clearTimeout(jumpScrollTimer);
@@ -375,7 +374,15 @@ function renderMic() {
   b.setAttribute('aria-pressed', listening ? 'true' : 'false');
   if (!micBusy) $('#micLbl').textContent = listening ? 'Listening' : 'Start';
   if (!listening) $('#micDot').style.transform = '';
-  $('#offScript').hidden = !(listening && follower.off);
+}
+// Off-script notice (optional, dim): shows only after being off script for a moment and stays until you've
+// been back on for a moment, so it never flashes.
+let offSince = 0, onSince = 0, offShown = false;
+function updateOffChip() {
+  const now = performance.now(), off = listening && follower.off;
+  if (off) { if (!offSince) offSince = now; onSince = 0; } else { if (!onSince) onSince = now; offSince = 0; }
+  const want = settings.offNotice !== 'off' && (offShown ? !(onSince && now - onSince > 800) : (offSince && now - offSince > 1500));
+  if (!!want !== offShown) { offShown = !!want; $('#offScript').hidden = !offShown; }
 }
 
 let startGen = 0;
@@ -519,6 +526,7 @@ function driver() {
 function tick() {
   requestAnimationFrame(tick);
   paint();
+  updateOffChip();
   const now = performance.now() / 1000;
   const dt = Math.min(0.1, now - lastTick || 0.016);
   lastTick = now;
@@ -1004,6 +1012,7 @@ async function syncSettingsUI() {
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span;
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
   $('#selMarks').value = settings.marks; $('#selUnit').value = settings.ttsUnit;
+  $('#selOff').value = settings.offNotice;
   $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery); $('#selMarkStr').value = settings.markStrength;
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
   $('#engineNote').textContent = settings.engine === 'google'
@@ -1018,7 +1027,7 @@ const bindSel = (id, key, after) => { $(id).onchange = (e) => { settings[key] = 
 $('#sText').oninput = (e) => { settings.textSize = +e.target.value; $('#oText').textContent = settings.textSize + ' px'; applySettings(); };
 $('#sText').onchange = () => { saveSettings(); scrollToCurrent(true); };
 bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selTheme', 'theme');
-bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength');
+bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
 for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
   $(id).onchange = (e) => { settings[key] = +e.target.value; saveSettings(); scrollToCurrent(true); };
 }

@@ -43,8 +43,8 @@ export function sim(a, b) {
 }
 const thr = (key) => (key.length <= 4 ? 0.74 : 0.68);
 const INS = 0.5;
-const matchScore = (u, s) => (u.func ? 0.7 : 1.2) + (s - 0.7) * 0.5;
-const subScore = (u) => (u.soft ? -0.3 : -0.75);
+const matchScore = (u, s) => (u.func ? 0.5 : 1.2) + (s - 0.7) * 0.5;
+const subScore = (u) => (u.soft ? -0.4 : -1.0);
 const delCost = (u) => (u.soft ? 0.15 : u.func ? 0.35 : 0.6);
 const leadCost = (u) => (u.soft ? 0.1 : u.func ? 0.25 : 0.4);
 
@@ -53,7 +53,7 @@ const OP_DIAG = 1, OP_INS = 2, OP_DEL = 3, OP_H2 = 4, OP_S2 = 5;
 // Align hyp keys to units starting at a0. Returns { end, score, marks, matches, content, trailing, first }.
 export function align(units, a0, h, opts = {}) {
   const H = h.length;
-  const W = Math.min(units.length - a0, opts.window || (H + 40 + Math.ceil(H * 0.5)));
+  const W = Math.min(units.length - a0, opts.window || (H + 15 + Math.ceil(H * 0.3)));
   if (W <= 0 || H === 0) return null;
   const cols = W + 1;
   const D = new Float32Array((H + 1) * cols);
@@ -97,46 +97,52 @@ export function align(units, a0, h, opts = {}) {
     else if (op === OP_H2) { i -= 2; j--; } else if (op === OP_S2) { i--; j -= 2; } else break;
   }
   ops.reverse();
+  // Only "solid" matches move the reading spot: a content word, or a word right next to another match.
+  // Stray words (a cough, someone in the room, a misheard "the") can't drag the spot forward through the text.
+  const ev = [];
+  ops.forEach((o, k) => {
+    if (o.op !== OP_DIAG && o.op !== OP_S2 && o.op !== OP_H2) return;
+    const u = units[a0 + o.j - 1];
+    if (o.op === OP_DIAG) {
+      const sm = sim(h[o.i - 1], u.key), hit = sm >= thr(u.key);
+      ev.push({ k, i: o.i, u: u.u, u0: u.u, hit, content: hit && !u.func && !u.soft, unit: u });
+    } else ev.push({ k, i: o.i, u: u.u, u0: o.op === OP_S2 ? u.u - 1 : u.u, hit: true, content: o.op === OP_S2 || !u.func, unit: u, op: o.op });
+  });
+  const hits = ev.filter((e) => e.hit);
+  const solid = hits.filter((e, q) => e.content
+    || (q > 0 && e.u0 - hits[q - 1].u <= 1 && e.i - hits[q - 1].i <= 2)
+    || (q + 1 < hits.length && hits[q + 1].u0 - e.u <= 1 && hits[q + 1].i - e.i <= 2));
   const marks = new Map();
   const hitAt = new Uint8Array(H + 1);
   const hypUnit = new Int32Array(H + 1).fill(-1);
-  let matches = 0, content = 0, trailing = 0, first = -1;
-  let delRun = [], leading = true;
-  const flushDel = () => {
-    if (!delRun.length) return;
-    const contentDel = delRun.some((u) => !u.soft && !u.func);
-    const real = contentDel || delRun.filter((u) => !u.soft).length >= 3;
-    const isLead = leading;
-    for (const u of delRun) {
-      if (isLead && (opts.freeLead || delRun.length > 25)) continue;
-      marks.set(u.u, real && !u.soft ? SKIP : READ);
-    }
-    delRun = [];
+  const K = Math.min(6, H);
+  if (!solid.length) return { end: a0, score: bv, marks, matches: 0, content: 0, trailing: H, first: -1, tailHit: 0, tailN: K, hypUnit };
+  const fs = solid[0], ls = solid[solid.length - 1];
+  const markRun = (run, isLead) => {
+    if (!run.length) return;
+    if (isLead && (opts.freeLead || run.length > 25)) return;
+    const real = run.some((u) => !u.soft && !u.func) || run.filter((u) => !u.soft).length >= 3;
+    for (const u of run) marks.set(u.u, real && !u.soft ? SKIP : READ);
   };
-  for (const o of ops) {
-    if (o.op === OP_DEL) { delRun.push(units[a0 + o.j - 1]); continue; }
-    if (o.op === OP_INS) { trailing++; continue; }
-    flushDel();
-    leading = false;
-    trailing = 0;
+  // anything before the first solid match counts as not read yet (skipped, if it's a short stretch)
+  markRun(units.slice(a0, fs.u0), true);
+  let matches = 0, content = 0, run = [];
+  for (let k = fs.k; k <= ls.k; k++) {
+    const o = ops[k];
+    if (o.op === OP_INS) continue;
+    if (o.op === OP_DEL) { run.push(units[a0 + o.j - 1]); continue; }
+    markRun(run, false); run = [];
     const u = units[a0 + o.j - 1];
     hypUnit[o.i] = u.u;
-    if (first < 0) first = o.op === OP_S2 ? u.u - 1 : u.u;
     if (o.op === OP_DIAG) {
-      const s = sim(h[o.i - 1], u.key);
-      if (s >= thr(u.key)) { marks.set(u.u, READ); matches++; hitAt[o.i] = 1; if (!u.func && !u.soft) content++; }
+      if (sim(h[o.i - 1], u.key) >= thr(u.key)) { marks.set(u.u, READ); matches++; hitAt[o.i] = 1; if (!u.func && !u.soft) content++; }
       else marks.set(u.u, u.soft || u.func ? READ : MAYBE);
-    } else if (o.op === OP_S2) {
-      marks.set(u.u - 1, READ); marks.set(u.u, READ); matches += 2; content++; hitAt[o.i] = 1;
-    } else { marks.set(u.u, READ); matches++; hitAt[o.i] = hitAt[o.i - 1] = 1; if (!u.func) content++; }
+    } else if (o.op === OP_S2) { marks.set(u.u - 1, READ); marks.set(u.u, READ); matches += 2; content++; hitAt[o.i] = 1; }
+    else { marks.set(u.u, READ); matches++; hitAt[o.i] = hitAt[o.i - 1] = 1; if (!u.func) content++; }
   }
-  const K = Math.min(6, H);
   let tailHit = 0;
   for (let k = H - K + 1; k <= H; k++) tailHit += hitAt[k];
-  // trailing deletions can't happen (free end), but leading-only paths can
-  if (first < 0) delRun = [];
-  flushDel();
-  return { end: a0 + bj, score: bv, marks, matches, content, trailing, first, tailHit, tailN: K, hypUnit };
+  return { end: ls.u + 1, score: bv, marks, matches, content, trailing: H - ls.i, first: fs.u0, tailHit, tailN: K, hypUnit };
 }
 
 export class Follower {

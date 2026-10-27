@@ -69,7 +69,7 @@ button { cursor: pointer; }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 .btn.danger { color: var(--over); }
 .chip { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; padding: 5px 9px; border-radius: 7px; flex-shrink: 0; }
-.chip.off { color: var(--accent-ink); background: var(--close); }
+.chip.off { color: var(--muted); background: var(--surface-2); border: 1px solid var(--rule); font-weight: 400; opacity: .8; }
 .mic {
   display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; min-width: 132px; justify-content: center;
   border: 2px solid var(--accent); color: var(--accent); background: transparent; border-radius: 22px; padding: 7px 16px; font-weight: 700;
@@ -282,6 +282,7 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
         <small>The tablet mic keeps Bluetooth earbuds out of phone-call mode. Applies to the on-tablet engine.</small></div>
       <div class="row"><label for="selMarks">Mistake marks</label><select id="selMarks"><option value="skips">Skipped words</option><option value="all">Skips + possible misreads</option><option value="off">Off</option></select>
         <small>Skipped words get a red wavy line. Possible misreads (dotted) are often the recognizer's mistake, not yours.</small></div>
+      <div class="row"><label for="selOff">Off-script notice</label><select id="selOff"><option value="off">Off</option><option value="subtle">Subtle</option></select></div>
       <div class="row"><label for="selMarkStr">Mark strength</label><select id="selMarkStr"><option value="faint">Faint</option><option value="medium">Medium</option><option value="strong">Strong</option></select></div>
     </fieldset>
     <fieldset>

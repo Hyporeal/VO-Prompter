@@ -60,7 +60,8 @@ The mic pauses while Settings or Files is open, when the app loses focus, or whe
 
 - **Skipped words** get a red wavy underline.
 - **Possible misreads** (optional) get a dotted underline. These are often the recognizer mishearing, not you.
-- If you go off script, an **Off script** tag shows until you're back on a line from the script. It finds you again if you jump back or ahead.
+- **Off-script notice** (off by default): a dim tag that appears after you've been off script for a moment. Either way, it finds you again when you're back on a line from the script, or if you jump back or ahead.
+- Stray words (a cough, someone in the room, a misheard "the") don't move the reading spot; it only moves forward on a content word or two matching words in a row.
 - **Files → Clear read marks** resets everything.
 
 ## Keyboard / page-turner

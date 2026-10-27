@@ -104,13 +104,22 @@ export class OnDeviceEngine {
       await loadScript('vendor/vosk.js');
       const url = await modelBlobUrl(onProgress);
       onProgress && onProgress({ phase: 'init' });
-      const model = await Promise.race([
-        window.Vosk.createModel(url),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('The speech model took too long to start')), 180000)),
-      ]);
-      URL.revokeObjectURL(url);
-      this.model = model;
-      return model;
+      // If it times out, a model that finishes starting later is shut down; the download link is always freed.
+      let timedOut = false;
+      const creating = window.Vosk.createModel(url);
+      try {
+        const model = await Promise.race([
+          creating,
+          new Promise((_, rej) => setTimeout(() => { timedOut = true; rej(new Error('The speech model took too long to start')); }, 180000)),
+        ]);
+        this.model = model;
+        return model;
+      } catch (e) {
+        creating.then((m) => { if (timedOut) { try { m.terminate(); } catch (x) { /* already gone */ } } }).catch(() => {});
+        throw e;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     })();
     try { return await this.loading; } finally { this.loading = null; }
   }

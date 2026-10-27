@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.10';
+const VERSION = '1.1.11';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -297,7 +297,7 @@ function paint() {
         let gc = 'g';
         if (sentMode) { const si = model.tokens[t].sent; if (si >= 0 && sentDone(si)) gc += ' done'; }
         else if (cur.said && next && next.said) gc += ' said';
-        if (t >= guideA && t < guideB) gc += ' next';
+        if ((t >= guideA && t < guideB) || (t === guideB && /\S/.test(g.textContent))) gc += ' next'; // a dash after the guided word goes with it
         if (inTts && t + 1 < tts.t1) gc += ' tts-sent';
         if (gc !== gapCls[t]) { g.className = gc; gapCls[t] = gc; }
       }

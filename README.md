@@ -57,6 +57,8 @@ The mic pauses while Settings or Files is open, when the app loses focus, or whe
 
 Switching to Android speech asks once first, because it sends audio of what you read to Google.
 
+**Save recordings** (off by default): while listening, the app also saves what the mic hears (WebM/Opus, about 0.5 MB a minute) plus a log of what it recognized and where it put you, one per listening stretch. **Files → Recordings** lists them; **Save** downloads a .zip of the audio and log for testing the app on real reads. On-tablet engine only. They hold your read of the script, so keep them private.
+
 ## Listen-mode voices
 
 - **Android voice**: the tablet's text-to-speech. Chrome on Android lists languages rather than voices; the voice used is the one picked in Android Settings (search "Text-to-speech", choose Speech Services by Google, then Install voice data → English (United States)).

@@ -4,14 +4,15 @@ import { OnDeviceEngine, GoogleEngine, modelIsCached } from './engines.js';
 import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
+import { writeZip } from './zip.js';
 
-const VERSION = '1.1.13';
+const VERSION = '1.1.14';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
   textSize: 28, said: 'hl', guide: 'under', span: 'word', overlap: 'some', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, textFrac: null, sideFrac: null, lastProject: null,
 };
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
@@ -32,6 +33,8 @@ let tts = null;
 let editing = null;
 let videoURL = null;
 let wakeLock = null;
+let curTake = null; // the listening stretch being recorded (Settings → Save recordings)
+const endedTakes = [];
 
 const follower = new Follower(onFollow);
 const speakers = { android: new Speaker(), piper: new PiperSpeaker() };
@@ -473,8 +476,9 @@ function onFollow(e) {
 function engineFor(kind) {
   if (!engines[kind]) {
     const cb = {
-      partial: (t) => follower.input(t, false),
-      final: (t) => follower.input(t, true),
+      partial: (t) => { follower.input(t, false); logTake(t, 0); },
+      final: (t) => { follower.input(t, true); logTake(t, 1); },
+      recorded: (blob) => saveTake(blob, endedTakes.shift()),
       level: (rms) => { const v = Math.min(1, Math.sqrt(rms) * 3.2); $('#micDot').style.transform = `scale(${1 + v * 0.9})`; },
       error: (msg) => { toast(msg, 5000); stopListening(); },
       dropped: () => micDropped(),
@@ -491,7 +495,7 @@ function renderMic() {
   b.classList.toggle('on', listening);
   b.classList.toggle('loading', micBusy);
   b.setAttribute('aria-pressed', listening ? 'true' : 'false');
-  if (!micBusy) $('#micLbl').textContent = listening ? 'Listening' : 'Start';
+  if (!micBusy) $('#micLbl').textContent = listening ? (curTake ? 'Listening · rec' : 'Listening') : 'Start';
   if (!listening) $('#micDot').style.transform = '';
 }
 // Off-script notice (optional, dim): shows only after being off script for a moment and stays until you've
@@ -519,6 +523,7 @@ async function startListening() {
   try {
     await eng.start({
       micSource: settings.micSource,
+      record: !!settings.saveTakes,
       onProgress: (p) => {
         if (p.phase === 'download') {
           if (!showedLoad) { showedLoad = true; openLoad('Getting the speech model', 'One-time download (41 MB). After this it works offline.'); }
@@ -544,6 +549,7 @@ async function startListening() {
   if (gen !== startGen) { eng.stop(); return; } // stopped or paused while starting
   engine = eng;
   micBusy = false; listening = true;
+  if (eng.recorder) curTake = { t0: eng.recStartedAt || performance.now(), wall: Date.now(), from: model.tokens[model.units[Math.min(follower.pos, model.N - 1)].ti].ti, events: [] };
   follower.commit(); follower.anchor = follower.pos; follower.segSkip = 0; follower.segLen = 0;
   setFollow(true);
   renderMic(); wantAwake();
@@ -564,6 +570,7 @@ function micDropped() {
 
 function stopListening() {
   startGen++;
+  if (curTake) { endedTakes.push(curTake); curTake = null; }
   if (engine) engine.stop();
   const was = listening;
   listening = false; micBusy = false;
@@ -1141,6 +1148,69 @@ function confirmDo(title, text, yes, fn) {
 $('#cYes').onclick = async () => { $('#dlgConfirm').close(); const f = confirmFn; confirmFn = null; if (f) await f(); };
 $('#cNo').onclick = () => { confirmFn = null; $('#dlgConfirm').close(); };
 
+// ---------- test recordings ----------
+// With Settings → Save recordings on, each listening stretch is also saved as audio plus a log of what the app
+// heard and where it put you, to test the app on real reads. Kept on the tablet (Files → Recordings) until saved.
+const TAKES = 'vo-prompter-takes-v1';
+function logTake(text, final) { if (curTake) curTake.events.push([Math.round(performance.now() - curTake.t0), text, final, follower.pos]); }
+async function saveTake(blob, meta) {
+  if (!blob || !meta) return;
+  const d = new Date(meta.wall), p2 = (n) => String(n).padStart(2, '0');
+  const base = `vo-take-${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-from-word-${meta.from}`;
+  const ext = /mp4/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm';
+  const log = { app: VERSION, started: new Date(meta.wall).toISOString(), fromWord: meta.from, audio: base + '.' + ext, audioType: blob.type,
+    settings: Object.fromEntries(['span', 'overlap', 'said', 'textSize', 'linesAbove', 'scrollEvery', 'scrollStyle', 'micSource'].map((k) => [k, settings[k]])),
+    note: 'events: [ms after recording started, recognized text, final (1) or partial (0), reading spot (word unit) after it]', events: meta.events };
+  try {
+    const c = await caches.open(TAKES);
+    await c.put(new URL('takes/' + base + '.' + ext, location.href).href, new Response(blob, { headers: { 'content-type': blob.type || 'audio/webm' } }));
+    await c.put(new URL('takes/' + base + '.json', location.href).href, new Response(JSON.stringify(log), { headers: { 'content-type': 'application/json' } }));
+    toast('Recording saved (Files → Recordings).');
+    if ($('#dlgFiles').open) renderTakes();
+  } catch (e) { noteError('take: ' + e.message); toast('Couldn’t keep the recording on the tablet (storage full?).'); }
+}
+async function listTakes() {
+  try {
+    const c = await caches.open(TAKES);
+    const keys = await c.keys();
+    const audio = keys.filter((r) => !r.url.endsWith('.json'));
+    return audio.map((r) => ({ c, req: r, name: decodeURIComponent(r.url.split('/').pop()) })).sort((a, b) => b.name.localeCompare(a.name));
+  } catch (e) { return []; }
+}
+async function renderTakes() {
+  const el = $('#takeList');
+  const list = await listTakes();
+  el.textContent = '';
+  $('#fTakesAll').hidden = !list.length;
+  if (!list.length) { el.innerHTML = '<p class="note">None yet. Turn on Settings → Save recordings, then read as usual.</p>'; return; }
+  for (const it of list) {
+    const res = await it.c.match(it.req);
+    const size = res ? (await res.clone().blob()).size : 0;
+    const row = document.createElement('div'); row.className = 'proj-item';
+    const t = document.createElement('div'); t.className = 't';
+    const m = it.name.match(/(\d{4})-(\d\d)-(\d\d)_(\d\d)(\d\d)(\d\d)/);
+    t.textContent = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).toLocaleString() : it.name;
+    const sm = document.createElement('small'); sm.textContent = (size / 1048576).toFixed(1) + ' MB'; t.appendChild(sm);
+    const save = document.createElement('button'); save.className = 'btn'; save.textContent = 'Save';
+    save.onclick = async () => {
+      save.disabled = true; save.textContent = 'Saving…';
+      try {
+        const audio = new Uint8Array(await (await it.c.match(it.req)).arrayBuffer());
+        const jr = await it.c.match(it.req.url.replace(/\.[a-z0-9]+$/, '.json'));
+        const files = [{ name: it.name, data: audio }];
+        if (jr) files.push({ name: it.name.replace(/\.[a-z0-9]+$/, '.json'), data: await jr.text() });
+        download(it.name.replace(/\.[a-z0-9]+$/, '.zip'), writeZip(files), 'application/zip');
+      } catch (e) { toast('Couldn’t save it: ' + e.message); }
+      save.disabled = false; save.textContent = 'Save';
+    };
+    const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
+    del.onclick = async () => { await it.c.delete(it.req); await it.c.delete(it.req.url.replace(/\.[a-z0-9]+$/, '.json')); renderTakes(); };
+    row.append(t, save, del);
+    el.appendChild(row);
+  }
+}
+$('#fTakesAll').onclick = () => confirmDo('Delete all recordings?', 'Every saved recording and its log will be removed from the tablet.', 'Delete all', async () => { try { await caches.delete(TAKES); } catch (e) { /* ignore */ } renderTakes(); });
+
 function renderFiles() {
   const has = !!project;
   $('#fOpenVideo').disabled = !has;
@@ -1149,6 +1219,7 @@ function renderFiles() {
   $('#fVideoNote').textContent = !has ? 'Open a script first.' : project.videoName ? `Video: ${project.videoName}` : 'No video. Add the video the script’s timestamps refer to.';
   for (const id of ['#fExportDocx', '#fExportTxt', '#fClearMarks']) $(id).disabled = !has;
   fillProjectList($('#projList'));
+  renderTakes();
 }
 $('#btnFiles').onclick = () => { pauseMic('dialog'); renderFiles(); $('#dlgFiles').showModal(); };
 $('#fOpenScript').onclick = () => $('#fileScript').click();
@@ -1200,7 +1271,7 @@ async function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
-  $('#selMarks').value = settings.marks; $('#selUnit').value = settings.ttsUnit;
+  $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
   $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery); $('#selMarkStr').value = settings.markStrength;
@@ -1220,6 +1291,7 @@ bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 
 bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
+$('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
 for (const [id, key] of [['#selAbove', 'linesAbove'], ['#selEvery', 'scrollEvery']]) {
   $(id).onchange = (e) => { const v = e.target.value; settings[key] = /^\d+$/.test(v) ? +v : v; saveSettings(); scrollToCurrent(true); };
 }

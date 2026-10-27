@@ -264,6 +264,12 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
       <legend>Scripts on this tablet</legend>
       <div class="proj-list" id="projList"></div>
     </fieldset>
+    <fieldset>
+      <legend>Recordings</legend>
+      <div class="proj-list" id="takeList"></div>
+      <div class="btns"><button class="btn danger" id="fTakesAll" hidden>Delete all recordings</button></div>
+      <p class="note">Saved while listening when Settings → Save recordings is on. Save gives a .zip with the audio and the app's log, for testing. They hold your read of the script, so keep them private.</p>
+    </fieldset>
     <p class="note">Scripts, edits and videos stay on this tablet. Nothing is uploaded.</p>
   </div>
 </dialog>
@@ -294,6 +300,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
         <small id="engineNote">On tablet: your voice stays on the tablet. The first start downloads a 41 MB speech model once.</small></div>
       <div class="row"><label for="selMic">Mic</label><select id="selMic"><option value="builtin">Tablet mic</option><option value="default">Default mic</option></select>
         <small>The tablet mic keeps Bluetooth earbuds out of phone-call mode. Applies to the on-tablet engine.</small></div>
+      <div class="row"><label for="selTakes">Save recordings</label><select id="selTakes"><option value="off">Off</option><option value="on">On</option></select>
+        <small>Also saves what the mic hears while listening, plus a log of what the app heard and where it put you, so the app can be tested on real reads. Files → Recordings. On-tablet engine only; about 0.5 MB a minute.</small></div>
       <div class="row"><label for="selMarks">Mistake marks</label><select id="selMarks"><option value="skips">Skipped words</option><option value="all">Skips + possible misreads</option><option value="off">Off</option></select>
         <small>Skipped words get a red wavy line. Possible misreads (dotted) are often the recognizer's mistake, not yours.</small></div>
       <div class="row"><label for="selOff">Off-script notice</label><select id="selOff"><option value="off">Off</option><option value="subtle">Subtle</option></select></div>

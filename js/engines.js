@@ -128,6 +128,20 @@ export class OnDeviceEngine {
     const { stream, label } = await openMic(opts.micSource);
     this.stream = stream; this.micLabel = label; this.usedNonBuiltin = opts.micSource !== 'builtin' || NOT_BUILTIN.test(label);
     try { await this.startAudio(stream); } catch (e) { this.stop(); throw e; } // never leave the mic open after a failed start
+    if (opts.record) this.startRecording(stream);
+  }
+  // Optional: also save what the mic hears (exactly what the recognizer gets) as one compressed audio file per
+  // listening stretch. The browser's own encoder does the work, so it adds very little load.
+  startRecording(stream) {
+    try {
+      const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+      const rec = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 64000 } : undefined);
+      const chunks = [];
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      rec.onstop = () => { if (chunks.length && this.cb.recorded) this.cb.recorded(new Blob(chunks, { type: rec.mimeType || type || 'audio/webm' })); };
+      rec.start(5000);
+      this.recorder = rec; this.recStartedAt = performance.now();
+    } catch (e) { this.recorder = null; }
   }
   async startAudio(stream) {
     let ctx;
@@ -184,6 +198,7 @@ export class OnDeviceEngine {
       try { rec.retrieveFinalResult(); } catch (e) { /* ignore */ }
       setTimeout(() => { try { rec.remove(); } catch (e) { /* ignore */ } }, 1500);
     }
+    if (this.recorder) { try { if (this.recorder.state !== 'inactive') this.recorder.stop(); } catch (e) { /* already stopped */ } this.recorder = null; }
     if (this.stream) { this.stream.getTracks().forEach((t) => t.stop()); this.stream = null; }
     if (this.ctx) { this.ctx.close().catch(() => {}); this.ctx = null; }
     if (wasActive && this.usedNonBuiltin) resetCallMode();

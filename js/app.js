@@ -5,7 +5,7 @@ import { Speaker, englishVoices } from './tts.js';
 import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 
-const VERSION = '1.1.5';
+const VERSION = '1.1.6';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -227,7 +227,7 @@ function guideRange() {
 // Sentence dimming: a sentence counts as finished once the reading spot is past its end.
 function sentDone(si) {
   const S = model.sentences, k = settings.said === 'sent2' ? si + 1 : si;
-  return k < S.length && S[k].u1 <= follower.pos;
+  return k < S.length && S[k].u1 <= stable.pos; // the settled spot, so a brief jump ahead never completes a sentence
 }
 // Missed-word and misread marks show only once their sentence is confirmed finished (the recognizer has
 // committed past its end), so marks never flicker while you're still reading the sentence.
@@ -348,8 +348,6 @@ function autoScroll() {
   let el, lastWord;
   if (tts && tts.cur >= 0) { el = tokEls[tts.cur]; lastWord = 0; }
   else if (listening) {
-    if (follower.pos !== stable.cand) { stable.cand = follower.pos; stable.t = now; }
-    else if (now - stable.t > 350) stable.pos = stable.cand;
     el = tokEls[model.units[Math.min(stable.pos, model.N - 1)].ti];
     const h = follower.hist; lastWord = h.length ? h[h.length - 1].t * 1000 : 0;
   } else return;
@@ -565,8 +563,21 @@ function driver() {
   if (mode === 'read' && listening) { const r = follower.rate(); return { pos: follower.pos, rate: r.rate, lastT: r.lastT }; }
   return { pos: follower.pos, rate: 0, lastT: 0 };
 }
+// The settled reading spot: follows the live spot once it has held for 400 ms (instantly when not listening).
+function updateStable() {
+  const now = performance.now(), prev = stable.pos;
+  if (!listening) stable.pos = stable.cand = follower.pos;
+  else if (follower.pos !== stable.cand) { stable.cand = follower.pos; stable.t = now; }
+  else if (now - stable.t > 400) stable.pos = stable.cand;
+  if (stable.pos !== prev && model && model.N && (settings.said === 'sent' || settings.said === 'sent2')) {
+    const a = Math.min(prev, stable.pos), b = Math.max(prev, stable.pos);
+    const si = model.tokens[model.units[Math.min(a, model.N - 1)].ti].sent, s0 = model.sentences[Math.max(0, si - 1)];
+    markDirtyUnits(s0 ? s0.u0 : a, b + 1);
+  }
+}
 function tick() {
   requestAnimationFrame(tick);
+  updateStable();
   paint();
   updateOffChip();
   autoScroll();

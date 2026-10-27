@@ -285,6 +285,16 @@ export class Follower {
       if (far && (r.matches < 5 || r.content < 3)) continue;
       if (r.content >= 2 && r.matches >= 3 && r.trailing <= 1 && (!best || score > best.score)) best = { ...r, score };
     }
-    return best && best.score > 1.5 ? best : null;
+    if (!best || best.score <= 1.5) return null;
+    // Hysteresis: if the same words fit about as well right around the current spot, stay here. Scripts repeat
+    // phrases in nearby sentences, and a few misheard words shouldn't hop the reader into the next one.
+    const here = align(m.units, Math.max(0, this.pos - 12), tail, { freeLead: true, window: K + 24 });
+    if (here && here.first >= 0 && Math.abs(here.first - this.pos) <= 24 && here.content >= 1 && here.matches >= 2) {
+      const clearlyBetter = best.matches >= here.matches + 2 && best.score >= here.score + 1.5;
+      if (!clearlyBetter) return { ...here, score: here.score };
+    }
+    // a forward jump past more than a few words needs more evidence
+    if (best.first - this.pos > 12 && (best.matches < 4 || best.content < 3)) return null;
+    return best;
   }
 }

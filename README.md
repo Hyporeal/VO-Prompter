@@ -19,6 +19,7 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 ## Video
 
 - **Files → Add video** stores the video on the tablet with the script.
+- **Videos for phones**: some phones (seen on Pixels in Chrome, Edge and Brave) freeze when jumping in a video whose full pictures (keyframes) are far apart, as in many Zoom recordings (one every 30 s). The app checks this when you add a video and says so in Files. A copy with a full picture every second fixes it (HandBrake or Media Encoder: keyframe interval 1 s; ffmpeg: `-g` set to the frame rate).
 - **Follow** (on by default): the video tracks your reading position. Its speed eases up and down to stay with you, and it pauses when you pause. An optional ×2.4 label (Settings) shows how fast it's running.
 - **Play**, **−5s**, **+5s**: play or move the video yourself. This turns Follow off; tap **Follow** to go back to your reading spot.
 - **Sound on** turns the mic off so you can listen to the reference. **Sound off** turns the mic back on if it was on.
@@ -87,7 +88,7 @@ Space starts and stops listening. Up and down arrows (or Page Up/Down) move by s
 
 **Settings → Copy diagnostics** copies app details (version, settings, tablet, recent errors) to paste into a message. It never includes your script's words, file names or video.
 
-**Settings → Debug log** (off by default): while on, the app notes with timings what the voices, the video and the speech engine do. Reproduce the problem, then **Copy debug log** and paste it into a message. It never includes your script's words, file names or any account details. With the debug log on, **Test the video** plays the script's video in a plain player (from the start, then after a jump into the middle) and shows which step the browser trips on. **Video check page** does the same in a bare page, away from the rest of the app, with variations (sound on, speed changes, other audio open, screen kept awake).
+**Settings → Debug log** (off by default): while on, the app notes with timings what the voices, the video and the speech engine do. Reproduce the problem, then **Copy debug log** and paste it into a message. It never includes your script's words, file names or any account details. With the debug log on, **Test the video** plays the script's video in a plain player (from the start, then after a jump into the middle) and shows which step the browser trips on. **Video check page** shows the video a few different ways in a bare page and asks what you see and hear.
 
 ## Privacy
 

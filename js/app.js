@@ -6,8 +6,9 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
+import { keyframeGap } from './mp4info.js';
 
-const VERSION = '1.1.25';
+const VERSION = '1.1.26';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -629,8 +630,29 @@ function stopListening() {
 // never does. Then the app switches to serving it like a website video from the app's offline helper, and
 // remembers that for this device. Ways to play, in order: 'blob' (default), 'sw' (served), 'memory' (last resort).
 let videoBlob = null, videoMode = 'blob', vStallTimer = null;
+// Full pictures far apart: jumping in the video can freeze on some phones (seen on Pixels with Chrome-based browsers;
+// a Zoom recording with one every 30 s froze, the same video with one every second played fine).
+let videoKf = null;
+const KF_WARN = 8;
+async function checkKeyframes(blob) {
+  videoKf = null;
+  const r = await keyframeGap(blob);
+  if (videoBlob !== blob) return;
+  videoKf = r;
+  dbg('video', r ? `full picture at most every ${r.maxGap.toFixed(1)} s` : 'couldn’t read how often it has a full picture');
+  renderFiles();
+  const phone = /Android|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 0 && Math.min(screen.width, screen.height) < 900);
+  let warned = [];
+  try { warned = JSON.parse(localStorage.getItem('vo-prompter-kf-warned') || '[]'); } catch (e) { /* ignore */ }
+  const key = project ? project.id : '';
+  if (r && r.maxGap > KF_WARN && phone && !warned.includes(key)) {
+    try { localStorage.setItem('vo-prompter-kf-warned', JSON.stringify([...warned, key].slice(-50))); } catch (e) { /* ignore */ }
+    toast(`This video has a full picture only every ${Math.round(r.maxGap)} s. On some phones that makes jumping in it freeze. If it does, see Files.`, 9000);
+  }
+}
 function setVideoSrc(blob, how) {
   if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
+  if (!how && blob !== videoBlob) { videoBlob = blob; checkKeyframes(blob); }
   videoBlob = blob;
   const canServe = !!(navigator.serviceWorker && navigator.serviceWorker.controller && project && project.videoName);
   videoMode = how || (settings.videoMode === 'sw' && canServe ? 'sw' : 'blob');
@@ -1578,7 +1600,7 @@ function renderFiles() {
   $('#fOpenVideo').disabled = !has;
   $('#fOpenVideo').textContent = project && project.videoName ? 'Replace video…' : 'Add video…';
   $('#fRemoveVideo').hidden = !(project && project.videoName);
-  $('#fVideoNote').textContent = !has ? 'Open a script first.' : project.videoName ? `Video: ${project.videoName}` : 'No video. Add the video the script’s timestamps refer to.';
+  $('#fVideoNote').textContent = !has ? 'Open a script first.' : project.videoName ? `Video: ${project.videoName}` + (videoKf && videoKf.maxGap > KF_WARN ? ` · It has a full picture only every ${Math.round(videoKf.maxGap)} s, which can make jumping in it freeze on some phones (seen on Pixels in Chrome, Edge and Brave). If that happens, use a copy made with a full picture every second (in HandBrake or Media Encoder: keyframe interval 1 s, or ffmpeg -g 25 for 25 fps video).` : '') : 'No video. Add the video the script’s timestamps refer to.';
   for (const id of ['#fExportDocx', '#fExportTxt', '#fClearMarks']) $(id).disabled = !has;
   fillProjectList($('#projList'));
   renderVo();
@@ -1779,7 +1801,7 @@ async function diagText() {
     `Script: ${model ? `${model.N} words, ${model.blocks.length} paragraphs, ${model.anchors.length} timestamps` : 'none'} · video: ${hasVideo() ? 'yes' : 'no'}`,
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
-    `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
+    `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'} · full picture every ${videoKf ? videoKf.maxGap.toFixed(1) + ' s at most' : '?'}`; })() : 'none'}`,
     `Storage: ${await (async () => { try { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; const per = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : 'n/a'; return `persistent ${per} · used ${e ? Math.round(e.usage / 1e6) : '?'} MB of ${e ? Math.round(e.quota / 1e6) : '?'} MB`; } catch (x) { return 'unavailable'; } })()} · video from ${hasVideo() ? videoMode : '-'}${settings.videoMode ? ' (device setting: ' + settings.videoMode + ')' : ''} · offline helper ${navigator.serviceWorker && navigator.serviceWorker.controller ? 'active' : 'not active'}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];

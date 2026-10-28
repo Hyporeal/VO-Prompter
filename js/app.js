@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.21';
+const VERSION = '1.1.22';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -18,6 +18,7 @@ const DEFAULTS = {
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
 if (settings.voiceURI !== undefined) { settings.ttsVoice = 'android:' + settings.voiceURI; delete settings.voiceURI; }
+if (settings.videoInMemory) { settings.videoMode = 'sw'; delete settings.videoInMemory; } // 1.1.20 → 1.1.22
 const saveSettings = () => store.saveSettings(settings);
 
 // ---------- state ----------
@@ -624,15 +625,18 @@ function stopListening() {
 }
 
 // ---------- video ----------
-// Some phones (seen on a Pixel in Edge) can't stream a large stored video: it loads its size, then stalls. If the
-// picture hasn't loaded 8 s after asking, the app reads the whole file into memory and plays it from there, and
-// remembers to do that straight away on this device next time.
-let videoBlob = null, videoInMemory = false, vStallTimer = null;
-function setVideoSrc(blob, inMemory = false) {
-  if (videoURL) URL.revokeObjectURL(videoURL);
-  videoBlob = blob; videoInMemory = inMemory;
-  if (!inMemory && settings.videoInMemory && blob.size < 600e6) { loadVideoIntoMemory(0); return; }
-  videoURL = URL.createObjectURL(blob);
+// Some browsers (Edge on Android) stall playing a stored video through a blob: link: the size loads, the picture
+// never does. Then the app switches to serving it like a website video from the app's offline helper, and
+// remembers that for this device. Ways to play, in order: 'blob' (default), 'sw' (served), 'memory' (last resort).
+let videoBlob = null, videoMode = 'blob', vStallTimer = null;
+function setVideoSrc(blob, how) {
+  if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
+  videoBlob = blob;
+  const canServe = !!(navigator.serviceWorker && navigator.serviceWorker.controller && project && project.videoName);
+  videoMode = how || (settings.videoMode === 'sw' && canServe ? 'sw' : 'blob');
+  if (videoMode === 'sw') videoURL = 'local-video/' + encodeURIComponent(project.id) + '?v=' + Date.now();
+  else videoURL = URL.createObjectURL(blob);
+  dbg('video', 'playing from ' + videoMode);
   video.src = videoURL;
   video.muted = !sound;
   document.body.classList.remove('no-video');
@@ -646,25 +650,32 @@ async function loadVideoIntoMemory(at) {
   try {
     const mem = new Blob([await src.arrayBuffer()], { type: src.type || 'video/mp4' });
     if (videoBlob !== src) return;
-    setVideoSrc(mem, true);
+    setVideoSrc(mem, 'memory');
     if (at > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = at; }, { once: true });
   } catch (e) { noteError('video into memory: ' + e.message); dbg('video', 'into memory failed: ' + e.message); }
 }
 function armVideoStall() {
   clearTimeout(vStallTimer);
-  if (videoInMemory || !hasVideo()) return;
+  if (!hasVideo() || videoMode === 'memory') return;
   vStallTimer = setTimeout(() => {
-    if (videoInMemory || !hasVideo() || video.readyState >= 2) return;
-    dbg('video', 'no picture data after 8 s: switching to playing from memory');
-    if (!settings.videoInMemory) { settings.videoInMemory = true; saveSettings(); }
-    loadVideoIntoMemory(video.currentTime);
+    if (!hasVideo() || video.readyState >= 2) return;
+    const at = video.currentTime;
+    if (videoMode === 'blob' && navigator.serviceWorker && navigator.serviceWorker.controller && project && project.videoName) {
+      dbg('video', 'no picture data after 8 s: serving it like a website video');
+      settings.videoMode = 'sw'; saveSettings();
+      setVideoSrc(videoBlob, 'sw');
+      if (at > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = at; }, { once: true });
+    } else {
+      dbg('video', 'no picture data after 8 s: playing from memory');
+      loadVideoIntoMemory(at);
+    }
   }, 8000);
 }
 video.addEventListener('seeking', armVideoStall);
 video.addEventListener('stalled', armVideoStall);
 function clearVideo() {
-  clearTimeout(vStallTimer); videoBlob = null; videoInMemory = false;
-  if (videoURL) URL.revokeObjectURL(videoURL);
+  clearTimeout(vStallTimer); videoBlob = null; videoMode = 'blob';
+  if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
   videoURL = null;
   video.removeAttribute('src'); video.load();
   document.body.classList.add('no-video');
@@ -1105,11 +1116,12 @@ async function openScriptFile(file) {
 
 async function openVideoFile(file) {
   if (!project) { toast('Open a script first.'); return; }
-  setVideoSrc(file);
   project.videoName = file.name;
   saveProject();
   try { await store.putVideo(project.id, file); }
-  catch (e) { toast('Couldn’t keep the video on this device; you’ll need to add it again next time.', 5000); }
+  catch (e) { project.videoName = null; toast('Couldn’t keep the video on this device; you’ll need to add it again next time.', 5000); }
+  setVideoSrc(file);
+  if (!project.videoName) { project.videoName = file.name; saveProject(); }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   renderFiles();
 }
@@ -1715,7 +1727,7 @@ async function diagText() {
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
     `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
-    `Storage: ${await (async () => { try { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; const per = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : 'n/a'; return `persistent ${per} · used ${e ? Math.round(e.usage / 1e6) : '?'} MB of ${e ? Math.round(e.quota / 1e6) : '?'} MB`; } catch (x) { return 'unavailable'; } })()} · video from ${hasVideo() ? (videoInMemory ? 'memory' : 'storage') : '-'}${settings.videoInMemory ? ' (memory on this device)' : ''}`,
+    `Storage: ${await (async () => { try { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; const per = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : 'n/a'; return `persistent ${per} · used ${e ? Math.round(e.usage / 1e6) : '?'} MB of ${e ? Math.round(e.quota / 1e6) : '?'} MB`; } catch (x) { return 'unavailable'; } })()} · video from ${hasVideo() ? videoMode : '-'}${settings.videoMode ? ' (device setting: ' + settings.videoMode + ')' : ''} · offline helper ${navigator.serviceWorker && navigator.serviceWorker.controller ? 'active' : 'not active'}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

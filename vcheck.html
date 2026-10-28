@@ -28,7 +28,8 @@
   <select id="pick"><option value="">Looking for videos…</option></select>
   <button id="file">Or pick a file…</button><input type="file" id="fileIn" accept="video/*" hidden>
 </div>
-<div><button id="run" disabled>Start</button></div>
+<div><button id="run" disabled>Start</button><button id="jumps" disabled>Jump test (no questions)</button></div>
+<p>Jump test: tries jumps in every stored video (and a picked file, if you picked one) and times them. Takes a few minutes; you can just watch.</p>
 <div id="step"></div>
 <div id="stage"></div>
 <div id="ask"></div>
@@ -53,10 +54,11 @@ open.onsuccess = () => {
     choose();
   };
 };
-function choose() { const i = $('#pick').value; if (i !== '' && window.recs) blob = window.recs[+i].blob; $('#run').disabled = !blob; }
+let picked = null;
+function choose() { const i = $('#pick').value; if (i !== '' && window.recs) blob = window.recs[+i].blob; $('#run').disabled = !blob; $('#jumps').disabled = !(window.recs && window.recs.length) && !picked; }
 $('#pick').onchange = choose;
 $('#file').onclick = () => $('#fileIn').click();
-$('#fileIn').onchange = (e) => { const f = e.target.files[0]; if (f) { blob = f; $('#pick').innerHTML = '<option value="">Picked file</option>'; $('#run').disabled = false; } };
+$('#fileIn').onchange = (e) => { const f = e.target.files[0]; if (f) { blob = f; picked = f; $('#pick').innerHTML = '<option value="">Picked file</option>'; $('#run').disabled = false; $('#jumps').disabled = false; } };
 
 // ask one or more yes/no questions; resolves with the answers
 function ask(qs) {
@@ -164,6 +166,59 @@ $('#run').onclick = async () => {
   }
   $('#step').textContent = 'Done. Tap Copy results and paste them in a message.';
   $('#run').disabled = false; $('#copy').disabled = false;
+};
+// ---------- jump test: objective, no questions ----------
+async function jumpOnce(b, at) {
+  const v = newVideo(URL.createObjectURL(b), true); v.controls = true;
+  $('#stage').innerHTML = ''; $('#stage').appendChild(v);
+  try {
+    await meta(v);
+    if (v.readyState < 1) return { ok: false, text: 'no metadata' };
+    await new Promise((r) => { if (v.readyState >= 2) r(); else { v.addEventListener('loadeddata', r, { once: true }); setTimeout(r, 8000); } });
+    const target = Math.min(at, v.duration - 20);
+    const t = performance.now();
+    let took = -1;
+    v.currentTime = target;
+    await new Promise((r) => { v.addEventListener('seeked', () => { took = Math.round(performance.now() - t); r(); }, { once: true }); setTimeout(r, 10000); });
+    if (took < 0) return { ok: false, text: `jump to ${fmt(target)} stuck (ready ${v.readyState})` };
+    const t0 = v.currentTime;
+    try { await v.play(); } catch (e) { return { ok: false, text: `jump to ${fmt(target)} ${took} ms, then play refused ${e.name}` }; }
+    await wait(3000);
+    const moved = v.currentTime - t0;
+    return { ok: moved > 1.5, text: `jump to ${fmt(target)} ${took} ms, then ${moved > 1.5 ? 'plays' : 'stuck (moved ' + moved.toFixed(1) + ' s, ready ' + v.readyState + ')'}` };
+  } finally { URL.revokeObjectURL(v.src); v.pause(); v.removeAttribute('src'); v.load(); $('#stage').innerHTML = ''; }
+}
+const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+// after a stuck jump the phone's decoder can stay stuck; wait until a plain play works again
+async function recover(b) {
+  const t = performance.now();
+  for (let i = 0; i < 8; i++) {
+    const v = newVideo(URL.createObjectURL(b), true); $('#stage').innerHTML = ''; $('#stage').appendChild(v);
+    await meta(v); const t0 = v.currentTime; try { await v.play(); } catch (e) { /* ignore */ }
+    await wait(3000); const ok = v.currentTime - t0 > 1.5;
+    URL.revokeObjectURL(v.src); v.pause(); v.removeAttribute('src'); v.load(); $('#stage').innerHTML = '';
+    if (ok) return Math.round((performance.now() - t) / 1000);
+    await wait(4000);
+  }
+  return -1;
+}
+$('#jumps').onclick = async () => {
+  $('#jumps').disabled = true; $('#run').disabled = true; lines.length = 0;
+  note('VO Prompter jump test');
+  note(navigator.userAgent);
+  const vids = (window.recs || []).map((r, i) => [`Stored video ${i + 1} (${Math.round(r.blob.size / 1048576)} MB)`, r.blob]);
+  if (picked) vids.push([`Picked file (${Math.round(picked.size / 1048576)} MB)`, picked]);
+  for (const [label, b] of vids) {
+    note(label);
+    for (const at of [60, 456, 1200]) {
+      $('#step').textContent = `${label}: jump to ${fmt(at)}…`;
+      const r = await jumpOnce(b, at);
+      note(`   ${r.ok ? 'OK  ' : 'FAIL'} ${r.text}`);
+      if (!r.ok) { $('#step').textContent = 'Waiting for the player to recover…'; const s = await recover(b); note(`   (player ${s >= 0 ? 'working again after ' + s + ' s' : 'still stuck after a minute'})`); }
+    }
+  }
+  $('#step').textContent = 'Done. Tap Copy results and paste them in a message.';
+  $('#jumps').disabled = false; $('#run').disabled = !blob; $('#copy').disabled = false;
 };
 $('#copy').onclick = async () => {
   try { await navigator.clipboard.writeText(lines.join('\n')); $('#copy').textContent = 'Copied'; } catch (e) { $('#copy').textContent = 'Select the text below and copy it'; }

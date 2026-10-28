@@ -25,7 +25,8 @@ function children(dv, start, end) {
 }
 const find = (dv, box, type) => children(dv, box.start, box.end).find((b) => b.type === type);
 
-export async function keyframeGap(blob) {
+// Times (seconds) of the video's full pictures, or null when it can't tell ([] means every picture is a full one).
+export async function keyframeTimes(blob) {
   try {
     // find the moov box among the top-level boxes
     let pos = 0, moov = null;
@@ -47,9 +48,9 @@ export async function keyframeGap(blob) {
       const v1 = dv.getUint8(mdhd.start) === 1;
       const scale = dv.getUint32(mdhd.start + (v1 ? 20 : 12));
       const stbl = find(dv, find(dv, mdia, 'minf'), 'stbl'); if (!stbl) return null;
-      const stts = find(dv, stbl, 'stts'), stss = find(dv, stbl, 'stss');
+      const stts = find(dv, stbl, 'stts'), stss = find(dv, stbl, 'stss'), ctts = find(dv, stbl, 'ctts');
       if (!stts || !scale) return null;
-      if (!stss) return { maxGap: 0, avgGap: 0 }; // every picture is a full one
+      if (!stss) return []; // every picture is a full one
       // decode time of each keyframe
       const keys = [];
       const nk = dv.getUint32(stss.start + 4);
@@ -57,16 +58,35 @@ export async function keyframeGap(blob) {
       const times = [];
       let sample = 1, t = 0, k = 0;
       const ne = dv.getUint32(stts.start + 4);
-      for (let e = 0; e < ne && k < keys.length; e++) {
+      for (let e = 0; e < ne; e++) {
         const count = dv.getUint32(stts.start + 8 + e * 8), delta = dv.getUint32(stts.start + 12 + e * 8);
-        while (k < keys.length && keys[k] < sample + count) { times.push((t + (keys[k] - sample) * delta) / scale); k++; }
+        while (k < keys.length && keys[k] < sample + count) { times.push(t + (keys[k] - sample) * delta); k++; }
         sample += count; t += count * delta;
       }
-      times.push(t / scale); // the end counts as the last gap's end
-      let maxGap = 0;
-      for (let i = 1; i < times.length; i++) maxGap = Math.max(maxGap, times[i] - times[i - 1]);
-      return { maxGap, avgGap: (times[times.length - 1] - times[0]) / Math.max(1, times.length - 1) };
+      // shown time = decode time + composition offset
+      if (ctts) {
+        const nc = dv.getUint32(ctts.start + 4);
+        let s0 = 1, kk = 0;
+        for (let e = 0; e < nc && kk < keys.length; e++) {
+          const count = dv.getUint32(ctts.start + 8 + e * 8), off = dv.getInt32(ctts.start + 12 + e * 8);
+          while (kk < keys.length && keys[kk] < s0 + count) { times[kk] += off; kk++; }
+          s0 += count;
+        }
+      }
+      for (let i = 0; i < times.length; i++) times[i] /= scale;
+      times.end = t / scale;
+      return times;
     }
     return null;
   } catch (e) { return null; }
+}
+
+export async function keyframeGap(blob) {
+  const times = await keyframeTimes(blob);
+  if (!times) return null;
+  if (!times.length) return { maxGap: 0, avgGap: 0 };
+  const all = [...times, times.end]; // the end counts as the last gap's end
+  let maxGap = 0;
+  for (let i = 1; i < all.length; i++) maxGap = Math.max(maxGap, all[i] - all[i - 1]);
+  return { maxGap, avgGap: (all[all.length - 1] - all[0]) / Math.max(1, all.length - 1) };
 }

@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.22';
+const VERSION = '1.1.23';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -716,6 +716,7 @@ function seekVideoToPos() {
   if (!hasVideo() || !model || !model.times || video.readyState < 1) return;
   const p = tts && tts.cur >= 0 ? model.tokens[tts.cur].u0 : follower.pos;
   video.currentTime = timeAt(model.times, p);
+  dbg('video', `jump to reading spot ${video.currentTime.toFixed(1)} s`);
   vRate = 0;
 }
 
@@ -805,7 +806,7 @@ function tick() {
   const target = timeAt(model.times, p);
   const err = target - video.currentTime;
   // phones' video decoders can't keep up much past ×4 (the picture goes black), so a big gap is a jump instead
-  if (err > 12 || err < -4) { video.currentTime = target; vRate = 0; return; }
+  if (err > 12 || err < -4) { dbg('video', `follow jump ${video.currentTime.toFixed(1)} → ${target.toFixed(1)} s`); video.currentTime = target; vRate = 0; return; }
   const slope = timeAt(model.times, p + 1) - timeAt(model.times, p);
   const desired = slope * d.rate + err / 1.2;
   vRate += (desired - vRate) * Math.min(1, dt / 0.35);
@@ -1614,7 +1615,7 @@ async function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
-  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug;
+  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug;
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
@@ -1637,7 +1638,7 @@ bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
 $('#selDebug').onchange = (e) => {
-  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug;
+  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug;
   if (settings.debug) {
     dbgLog.length = 0; dbgT0 = performance.now();
     dbg('start', `VO Prompter ${VERSION} · ${navigator.userAgent}`);
@@ -1645,6 +1646,39 @@ $('#selDebug').onchange = (e) => {
     dbg('voices', `${vs.length} system voices; English: ` + englishVoices().map((v) => `${v.name} [${v.lang}${v.localService ? ', local' : ', online'}${v.default ? ', default' : ''}]`).join('; '));
   }
 };
+// Video test (debug): plays the script's video in a plain player, step by step, to find which step a browser trips on.
+$('#btnVidTest').onclick = async () => {
+  if (!hasVideo() || !videoBlob) { toast('Add a video to this script first.'); return; }
+  $('#dlgSettings').close(); $('#dlgVidTest').showModal();
+  const v = $('#vtVideo'), out = $('#vtOut');
+  try { video.pause(); } catch (e) { /* ignore */ }
+  const say = (m) => { out.textContent += m + '\n'; dbg('vtest', m); };
+  out.textContent = '';
+  const st = () => { const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : { totalVideoFrames: '?' }; return `t ${v.currentTime.toFixed(1)} ready ${v.readyState} frames ${q.totalVideoFrames}${v.error ? ' error ' + v.error.code : ''}`; };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const run = async (label, src, seekTo) => {
+    v.pause(); v.removeAttribute('src'); v.load();
+    v.src = src;
+    const t0 = performance.now();
+    await new Promise((r) => { v.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 8000); });
+    say(`${label}: metadata after ${Math.round(performance.now() - t0)} ms · ${v.videoWidth}x${v.videoHeight}`);
+    if (seekTo) { v.currentTime = seekTo; await new Promise((r) => { v.addEventListener('seeked', r, { once: true }); setTimeout(r, 8000); }); say(`  after jump to ${seekTo} s: ${st()}`); }
+    try { await v.play(); } catch (e) { say('  play() refused: ' + e.message); }
+    await wait(5000);
+    say(`  after 5 s playing: ${st()}`);
+    v.pause();
+  };
+  const blobUrl = URL.createObjectURL(videoBlob);
+  const swUrl = navigator.serviceWorker && navigator.serviceWorker.controller && project ? 'local-video/' + encodeURIComponent(project.id) + '?t=' + Date.now() : null;
+  try {
+    say(`App's own player now: ${video.readyState} ready, mode ${videoMode}`);
+    await run('1. stored file, from the start', blobUrl, 0);
+    await run('2. stored file, jump to 7:36', blobUrl, 456);
+    if (swUrl) { await run('3. served file, from the start', swUrl, 0); await run('4. served file, jump to 7:36', swUrl, 456); }
+    say('Done. Copy the debug log (Settings) and send it.');
+  } finally { URL.revokeObjectURL(blobUrl); }
+};
+$('#dlgVidTest').addEventListener('close', () => { const v = $('#vtVideo'); v.pause(); v.removeAttribute('src'); v.load(); });
 $('#btnDbg').onclick = async () => {
   const text = (await diagText()) + '\n\nDebug log:\n' + (dbgLog.join('\n') || '(empty)');
   let ok = true;

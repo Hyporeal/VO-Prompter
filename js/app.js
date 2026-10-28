@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.24';
+const VERSION = '1.1.25';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -651,7 +651,7 @@ async function loadVideoIntoMemory(at) {
     const mem = new Blob([await src.arrayBuffer()], { type: src.type || 'video/mp4' });
     if (videoBlob !== src) return;
     setVideoSrc(mem, 'memory');
-    if (at > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = at; }, { once: true });
+    if (at > 0) seekVideo(at, 'resume');
   } catch (e) { noteError('video into memory: ' + e.message); dbg('video', 'into memory failed: ' + e.message); }
 }
 function armVideoStall() {
@@ -664,7 +664,7 @@ function armVideoStall() {
       dbg('video', 'no picture data after 8 s: serving it like a website video');
       settings.videoMode = 'sw'; saveSettings();
       setVideoSrc(videoBlob, 'sw');
-      if (at > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = at; }, { once: true });
+      if (at > 0) seekVideo(at, 'resume');
     } else {
       dbg('video', 'no picture data after 8 s: playing from memory');
       loadVideoIntoMemory(at);
@@ -674,7 +674,7 @@ function armVideoStall() {
 video.addEventListener('seeking', armVideoStall);
 video.addEventListener('stalled', armVideoStall);
 function clearVideo() {
-  clearTimeout(vStallTimer); videoBlob = null; videoMode = 'blob';
+  clearTimeout(vStallTimer); videoBlob = null; videoMode = 'blob'; pendingSeek = null;
   if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
   videoURL = null;
   video.removeAttribute('src'); video.load();
@@ -712,12 +712,31 @@ video.addEventListener('pause', () => { renderPlay(); wantAwake(); });
 function updateVTime() { $('#vTime').textContent = `${fmtTime(video.currentTime)} / ${fmtTime(video.duration)}`; }
 function renderPlay() { const playing = !video.paused; $('#icoPlay').toggleAttribute('hidden', playing); $('#icoPause').toggleAttribute('hidden', !playing); $('#vPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
 
+// All jumps in the video go through here. Phones with Chrome-based browsers (seen on Pixels) get stuck for good, and
+// keep the video decoder stuck for a while, when a video is jumped far before its first picture is ready, or jumped
+// again while a jump is still going. So a jump waits for the first picture, and jumps made meanwhile collapse into
+// the last one.
+let pendingSeek = null;
+function seekVideo(t, why) {
+  if (!hasVideo() || !(t >= 0)) return;
+  vRate = 0;
+  if (video.readyState < 2 || video.seeking) {
+    if (pendingSeek === null) dbg('video', `${why} jump to ${t.toFixed(1)} s waits (${video.seeking ? 'still jumping' : 'no picture yet'})`);
+    pendingSeek = t;
+    return;
+  }
+  pendingSeek = null;
+  dbg('video', `${why} jump ${video.currentTime.toFixed(1)} → ${t.toFixed(1)} s`);
+  video.currentTime = t;
+}
+function flushSeek() { if (pendingSeek !== null && video.readyState >= 2 && !video.seeking) { const t = pendingSeek; pendingSeek = null; seekVideo(t, 'waiting'); } }
+video.addEventListener('loadeddata', flushSeek);
+video.addEventListener('canplay', flushSeek);
+video.addEventListener('seeked', flushSeek);
 function seekVideoToPos() {
   if (!hasVideo() || !model || !model.times || video.readyState < 1) return;
   const p = tts && tts.cur >= 0 ? model.tokens[tts.cur].u0 : follower.pos;
-  video.currentTime = timeAt(model.times, p);
-  dbg('video', `jump to reading spot ${video.currentTime.toFixed(1)} s`);
-  vRate = 0;
+  seekVideo(timeAt(model.times, p), 'reading spot');
 }
 
 function setFollow(on) {
@@ -806,7 +825,7 @@ function tick() {
   const target = timeAt(model.times, p);
   const err = target - video.currentTime;
   // phones' video decoders can't keep up much past ×4 (the picture goes black), so a big gap is a jump instead
-  if (err > 12 || err < -4) { dbg('video', `follow jump ${video.currentTime.toFixed(1)} → ${target.toFixed(1)} s`); video.currentTime = target; vRate = 0; return; }
+  if (err > 12 || err < -4) { if (!video.seeking && pendingSeek === null) seekVideo(target, 'follow'); return; }
   const slope = timeAt(model.times, p + 1) - timeAt(model.times, p);
   const desired = slope * d.rate + err / 1.2;
   vRate += (desired - vRate) * Math.min(1, dt / 0.35);
@@ -830,8 +849,8 @@ $('#vPlay').onclick = () => {
   if (video.paused) { setFollow(false); video.playbackRate = 1; video.play().catch(() => {}); }
   else { setFollow(false); video.pause(); }
 };
-$('#vBack').onclick = () => { if (!hasVideo()) return; setFollow(false); video.currentTime = Math.max(0, video.currentTime - 5); };
-$('#vFwd').onclick = () => { if (!hasVideo()) return; setFollow(false); video.currentTime = Math.min(video.duration || 0, video.currentTime + 5); };
+$('#vBack').onclick = () => { if (!hasVideo()) return; setFollow(false); seekVideo(Math.max(0, video.currentTime - 5), 'back 5'); };
+$('#vFwd').onclick = () => { if (!hasVideo()) return; setFollow(false); seekVideo(Math.min(video.duration || 0, video.currentTime + 5), 'ahead 5'); };
 $('#vFollow').onclick = () => { if (follow) setFollow(false); else { video.pause(); setFollow(true); } };
 $('#vSound').onclick = () => setSound(!sound);
 
@@ -1192,7 +1211,7 @@ docEl.addEventListener('click', (e) => {
     const t = +stamp.dataset.time;
     const pb = model.blocks.find((b) => b.pid === para.dataset.pid);
     if (pb && pb.u1 > pb.u0) follower.jumpTo(pb.u0, false);
-    video.currentTime = t; vRate = 0;
+    seekVideo(t, 'timestamp');
     return;
   }
   if (!w) return;
@@ -1203,7 +1222,7 @@ docEl.addEventListener('click', (e) => {
   // read mode: jump the reading spot and the video
   const wasPlaying = hasVideo() && !video.paused && !follow;
   follower.jumpTo(tok.u0, true);
-  if (hasVideo() && model.times) { video.currentTime = timeAt(model.times, tok.u0); vRate = 0; if (wasPlaying) video.play().catch(() => {}); }
+  if (hasVideo() && model.times) { seekVideo(timeAt(model.times, tok.u0), 'tap'); if (wasPlaying) video.play().catch(() => {}); }
   userScrollUntil = 0;
   scrollToCurrent(true);
 });

@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.19';
+const VERSION = '1.1.20';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -624,15 +624,46 @@ function stopListening() {
 }
 
 // ---------- video ----------
-function setVideoSrc(blob) {
+// Some phones (seen on a Pixel in Edge) can't stream a large stored video: it loads its size, then stalls. If the
+// picture hasn't loaded 8 s after asking, the app reads the whole file into memory and plays it from there, and
+// remembers to do that straight away on this device next time.
+let videoBlob = null, videoInMemory = false, vStallTimer = null;
+function setVideoSrc(blob, inMemory = false) {
   if (videoURL) URL.revokeObjectURL(videoURL);
+  videoBlob = blob; videoInMemory = inMemory;
+  if (!inMemory && settings.videoInMemory && blob.size < 600e6) { loadVideoIntoMemory(0); return; }
   videoURL = URL.createObjectURL(blob);
   video.src = videoURL;
   video.muted = !sound;
   document.body.classList.remove('no-video');
   layout();
+  armVideoStall();
 }
+async function loadVideoIntoMemory(at) {
+  const src = videoBlob;
+  if (!src || src.size >= 600e6) return;
+  dbg('video', `reading the video into memory (${Math.round(src.size / 1e6)} MB)`);
+  try {
+    const mem = new Blob([await src.arrayBuffer()], { type: src.type || 'video/mp4' });
+    if (videoBlob !== src) return;
+    setVideoSrc(mem, true);
+    if (at > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = at; }, { once: true });
+  } catch (e) { noteError('video into memory: ' + e.message); dbg('video', 'into memory failed: ' + e.message); }
+}
+function armVideoStall() {
+  clearTimeout(vStallTimer);
+  if (videoInMemory || !hasVideo()) return;
+  vStallTimer = setTimeout(() => {
+    if (videoInMemory || !hasVideo() || video.readyState >= 2) return;
+    dbg('video', 'no picture data after 8 s: switching to playing from memory');
+    if (!settings.videoInMemory) { settings.videoInMemory = true; saveSettings(); }
+    loadVideoIntoMemory(video.currentTime);
+  }, 8000);
+}
+video.addEventListener('seeking', armVideoStall);
+video.addEventListener('stalled', armVideoStall);
 function clearVideo() {
+  clearTimeout(vStallTimer); videoBlob = null; videoInMemory = false;
   if (videoURL) URL.revokeObjectURL(videoURL);
   videoURL = null;
   video.removeAttribute('src'); video.load();

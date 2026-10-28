@@ -52,6 +52,8 @@ Without timestamps, the video is spread evenly across the whole script.
 - **Guide covers**: off, next word, next phrase, whole line (the line on screen), whole sentence, or whole paragraph.
 - **Guide overlap**: the app hears each word about half a second after you say it. With overlap (default: a little), the guide also covers the word it just heard and the next few, so the word you're saying stays inside it: next word becomes a short band (2 words back, 4 ahead; More: 2 back, 6 ahead), and line, sentence and paragraph guides take in the next one as you reach the end of the current one. None is a single exact spot.
 
+**Desktop view** (Settings → App, off by default): always uses the side-by-side layout and full-size controls, even in a narrow window or an installed app window.
+
 ## Speech engines
 
 - **On tablet** (default): [Vosk](https://alphacephei.com/vosk/) running in the browser. Your voice never leaves the tablet. The first start downloads a 41 MB model once; after that it works offline, and the engine warms up a couple of seconds after the app opens so **Start** is quick (the mic stays off until you tap Start).

@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.27';
+const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -797,7 +797,14 @@ $('#vSound').onclick = () => setSound(!sound);
 // it's moved up (so text is never behind or under the video). Landscape: the video is on the right; the bar sets its width.
 const mainEl = $('#main'), sideEl = $('#side'), paneEl = $('#videoPane');
 const GRIP = 18;
-const isLand = () => window.innerWidth > window.innerHeight;
+const isLand = () => !!settings.desktop || window.innerWidth > window.innerHeight;
+// Desktop view: side-by-side layout and full-width controls, even in a narrow or installed window.
+function applyDesk() {
+  document.body.classList.toggle('desk', !!settings.desktop);
+  const m = document.querySelector('meta[name=viewport]');
+  if (m) m.content = settings.desktop && Math.min(screen.width, screen.height) < 900 ? 'width=1280' : 'width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content';
+  if (typeof layout === 'function') try { layout(); } catch (e) { /* not ready */ }
+}
 function layout() {
   const land = isLand();
   mainEl.classList.toggle('land', land);
@@ -1571,6 +1578,7 @@ async function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
+  $('#chkDesk').checked = !!settings.desktop;
   $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug;
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
@@ -1593,6 +1601,7 @@ bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
+$('#chkDesk').onchange = (e) => { settings.desktop = e.target.checked; saveSettings(); applyDesk(); };
 $('#selDebug').onchange = (e) => {
   settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug;
   if (settings.debug) {
@@ -1701,3 +1710,4 @@ window.__vop = {
   follower, get model() { return model; }, get state() { return { mode, listening, follow, sound, pos: follower.pos, off: follower.off, vTime: video.currentTime, vRate: video.playbackRate, paused: video.paused }; },
   input: (t, f) => follower.input(t, f),
 };
+applyDesk();

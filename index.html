@@ -65,7 +65,7 @@ button { cursor: pointer; }
 .sw.erase { background: var(--surface-2); color: var(--muted); font-size: 14px; }
 .sw[aria-pressed="true"] { border-color: var(--fg); box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--fg); }
 #btnHl[aria-pressed="true"], #btnMine[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-@media (max-width: 600px) { .bar { flex-wrap: wrap; row-gap: 6px; } .bar .title { order: 10; flex: 1 1 100px; } .mic { min-width: 0; } }
+@media (max-width: 600px) { body:not(.desk) .bar { flex-wrap: wrap; row-gap: 6px; } body:not(.desk) .bar .title { order: 10; flex: 1 1 100px; } body:not(.desk) .mic { min-width: 0; } }
 
 /* Top bar */
 .bar {
@@ -215,8 +215,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
 .gone { max-width: 600px; margin: 12vh auto; padding: 0 20px; display: grid; gap: 14px; }
 .gone ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
 @media (max-width: 720px) {
-  .bar { gap: 6px; flex-wrap: wrap; } .seg button { padding: 8px 11px; } .mic { min-width: 0; }
-  .vctl { gap: 6px; } .vctl .btn { min-width: 44px; padding: 0 10px; }
+  body:not(.desk) .bar { gap: 6px; flex-wrap: wrap; } body:not(.desk) .seg button { padding: 8px 11px; } body:not(.desk) .mic { min-width: 0; }
+  body:not(.desk) .vctl { gap: 6px; } body:not(.desk) .vctl .btn { min-width: 44px; padding: 0 10px; }
 }
 @media (prefers-reduced-motion: reduce) { .mic .dot { transition: none; } }
 </style>
@@ -373,6 +373,7 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     <fieldset>
       <legend>App</legend>
       <p class="note" id="aboutLine"></p>
+      <div class="row"><label for="chkDesk">Desktop view</label><input type="checkbox" id="chkDesk"></div>
       <div class="row"><label for="selDebug">Debug log</label><select id="selDebug"><option value="off">Off</option><option value="on">On</option></select>
         <small>While on, the app notes what voices, video and the speech engine do, with times, so a problem can be traced. Turn it on, reproduce the problem, then Copy debug log and paste it into a message. No script words, file names or account details are logged.</small></div>
       <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><button class="btn" id="btnDbg" hidden>Copy debug log</button><a class="btn" href="THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Licenses</a></div>

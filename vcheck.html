@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VO Prompter video check</title>
+<style>
+  :root { --bg: #111; --fg: #eee; --muted: #aaa; --line: #333; --ok: #34d399; --bad: #f87171; --btn: #2a2a2a; }
+  @media (prefers-color-scheme: light) { :root { --bg: #fafafa; --fg: #111; --muted: #555; --line: #ccc; --ok: #047857; --bad: #b91c1c; --btn: #e8e8e8; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p { margin: 6px 0; color: var(--muted); }
+  button, select { font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn); color: var(--fg); margin: 6px 6px 6px 0; }
+  #stage { position: relative; width: 100%; max-width: 640px; aspect-ratio: 16 / 9; background: #000; margin: 10px 0; }
+  #stage video { width: 100%; height: 100%; display: block; object-fit: contain; }
+  ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  pre { white-space: pre-wrap; font-size: 13px; background: var(--btn); padding: 10px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<h1>Video check</h1>
+<p>Plays the script's video in a bare page, several ways, about 5 seconds each, to find what this browser trips on. Nothing is uploaded. The results list no file names.</p>
+<div>
+  <select id="pick"><option value="">Looking for videos…</option></select>
+  <button id="file">Or pick a file…</button><input type="file" id="fileIn" accept="video/*" hidden>
+</div>
+<div><button id="run" disabled>Run the check</button><button id="copy" disabled>Copy results</button></div>
+<div id="stage"></div>
+<ol id="list"></ol>
+<pre id="out" hidden></pre>
+<script>
+const $ = (s) => document.querySelector(s);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+let blob = null, storedId = null;
+const lines = [];
+
+// stored videos (same device, same app)
+const open = indexedDB.open('vo-prompter');
+open.onsuccess = () => {
+  const d = open.result;
+  if (!d.objectStoreNames.contains('videos')) { $('#pick').innerHTML = '<option value="">No stored videos</option>'; return; }
+  const q = d.transaction('videos').objectStore('videos').getAll();
+  q.onsuccess = () => {
+    const recs = q.result.filter((r) => r && r.blob);
+    window.recs = recs;
+    $('#pick').innerHTML = recs.length ? recs.map((r, i) => `<option value="${i}">Stored video ${i + 1} (${Math.round(r.blob.size / 1048576)} MB)</option>`).join('') : '<option value="">No stored videos</option>';
+    choose();
+  };
+};
+open.onerror = () => { $('#pick').innerHTML = '<option value="">No stored videos</option>'; };
+function choose() {
+  const i = $('#pick').value;
+  if (i !== '' && window.recs) { blob = window.recs[+i].blob; storedId = window.recs[+i].id; }
+  $('#run').disabled = !blob;
+}
+$('#pick').onchange = choose;
+$('#file').onclick = () => $('#fileIn').click();
+$('#fileIn').onchange = (e) => { const f = e.target.files[0]; if (f) { blob = f; storedId = null; $('#pick').innerHTML = '<option value="">Picked file</option>'; $('#run').disabled = false; } };
+
+function note(text, cls) { lines.push(text); const li = document.createElement('li'); li.textContent = text; if (cls) li.className = cls; $('#list').appendChild(li); }
+
+async function trial(name, opt) {
+  const stage = $('#stage');
+  stage.innerHTML = '';
+  const v = document.createElement('video');
+  v.playsInline = true; v.muted = opt.muted !== false; v.preload = opt.preload || 'auto';
+  if (opt.hidden) { v.style.height = '0'; v.style.width = '0'; }
+  stage.appendChild(v);
+  const url = opt.served ? 'local-video/' + encodeURIComponent(storedId) + '?t=' + Date.now() : URL.createObjectURL(blob);
+  const ev = [];
+  for (const e of ['stalled', 'waiting', 'seeked', 'playing', 'error']) v.addEventListener(e, () => ev.push(e));
+  let extra = null;
+  try {
+    if (opt.before) extra = await opt.before();
+    v.src = url;
+    await new Promise((r) => { v.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 8000); });
+    if (v.readyState < 1) throw new Error('no metadata after 8 s');
+    if (opt.seek) { v.currentTime = Math.min(opt.seek, v.duration / 2); await new Promise((r) => { v.addEventListener('seeked', r, { once: true }); setTimeout(r, 8000); }); }
+    const t0 = v.currentTime;
+    try { await v.play(); } catch (e) { ev.push('play refused: ' + e.name); }
+    if (opt.rates) for (const r of opt.rates) { await wait(1000); v.playbackRate = r; }
+    await wait(opt.rates ? 5000 - opt.rates.length * 1000 : 5000);
+    const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : { totalVideoFrames: '?' };
+    const moved = v.currentTime - t0;
+    const ok = moved > 2 && v.readyState >= 2;
+    note(`${ok ? 'PASS' : 'FAIL'} · ${name} · moved ${moved.toFixed(1)} s · ready ${v.readyState} · frames ${q.totalVideoFrames}${v.error ? ' · error ' + v.error.code : ''}${ev.length ? ' · ' + [...new Set(ev)].join(', ') : ''}`, ok ? 'ok' : 'bad');
+  } catch (e) {
+    note(`FAIL · ${name} · ${e.message}`, 'bad');
+  } finally {
+    v.pause(); v.removeAttribute('src'); v.load(); stage.innerHTML = '';
+    if (!opt.served) URL.revokeObjectURL(url);
+    if (extra && extra.done) try { await extra.done(); } catch (e) { /* ignore */ }
+  }
+}
+
+const tone = (sampleRate, latencyHint) => async () => {
+  const ctx = sampleRate ? new AudioContext({ sampleRate, latencyHint }) : new AudioContext({ latencyHint });
+  const o = ctx.createOscillator(), g = ctx.createGain(); g.gain.value = 0.0001; o.connect(g).connect(ctx.destination); o.start();
+  await ctx.resume();
+  return { done: () => ctx.close() };
+};
+
+$('#run').onclick = async () => {
+  $('#run').disabled = true; $('#list').innerHTML = ''; lines.length = 0;
+  note(navigator.userAgent);
+  const T = [
+    ['1 plain, muted, from the start', {}],
+    ['2 plain, with sound', { muted: false }],
+    ['3 jump to the middle first (like the app)', { seek: 456 }],
+    ['4 speed changes (like the app)', { rates: [1.3, 0.8, 1.6] }],
+    ['5 video at zero size', { hidden: true }],
+    ['6 natural-voice audio open', { before: tone(0, 'playback') }],
+    ['7 listening audio open (16 kHz)', { before: tone(16000, 'interactive') }],
+    ['8 screen kept awake', { before: async () => { try { const l = await navigator.wakeLock.request('screen'); return { done: () => l.release() }; } catch (e) { note('(screen wake lock not available here; test 8 runs without it)'); return null; } } }],
+    ['9 preload metadata only', { preload: 'metadata' }],
+  ];
+  if (storedId && navigator.serviceWorker && navigator.serviceWorker.controller) T.push(['10 served by the app (offline helper)', { served: true }]);
+  for (const [n, o] of T) await trial(n, o);
+  note('Done');
+  $('#run').disabled = false; $('#copy').disabled = false;
+};
+$('#copy').onclick = async () => {
+  const text = 'VO Prompter video check\n' + lines.join('\n');
+  try { await navigator.clipboard.writeText(text); $('#copy').textContent = 'Copied'; }
+  catch (e) { $('#out').hidden = false; $('#out').textContent = text; }
+};
+</script>
+</body>
+</html>

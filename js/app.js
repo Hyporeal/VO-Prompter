@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.23';
+const VERSION = '1.1.24';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -1615,7 +1615,7 @@ async function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
-  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug;
+  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug; $('#lnkVcheck').hidden = !settings.debug;
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
@@ -1638,7 +1638,7 @@ bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
 $('#selDebug').onchange = (e) => {
-  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug;
+  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug; $('#lnkVcheck').hidden = !settings.debug;
   if (settings.debug) {
     dbgLog.length = 0; dbgT0 = performance.now();
     dbg('start', `VO Prompter ${VERSION} · ${navigator.userAgent}`);

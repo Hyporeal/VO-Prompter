@@ -87,7 +87,7 @@ Space starts and stops listening. Up and down arrows (or Page Up/Down) move by s
 
 **Settings → Copy diagnostics** copies app details (version, settings, tablet, recent errors) to paste into a message. It never includes your script's words, file names or video.
 
-**Settings → Debug log** (off by default): while on, the app notes with timings what the voices, the video and the speech engine do. Reproduce the problem, then **Copy debug log** and paste it into a message. It never includes your script's words, file names or any account details. With the debug log on, **Test the video** plays the script's video in a plain player (from the start, then after a jump into the middle) and shows which step the browser trips on.
+**Settings → Debug log** (off by default): while on, the app notes with timings what the voices, the video and the speech engine do. Reproduce the problem, then **Copy debug log** and paste it into a message. It never includes your script's words, file names or any account details. With the debug log on, **Test the video** plays the script's video in a plain player (from the start, then after a jump into the middle) and shows which step the browser trips on. **Video check page** does the same in a bare page, away from the rest of the app, with variations (sound on, speed changes, other audio open, screen kept awake).
 
 ## Privacy
 

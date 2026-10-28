@@ -6,9 +6,8 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
-import { keyframeGap } from './mp4info.js';
 
-const VERSION = '1.1.26';
+const VERSION = '1.1.27';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -19,7 +18,6 @@ const DEFAULTS = {
 const settings = store.loadSettings(DEFAULTS);
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
 if (settings.voiceURI !== undefined) { settings.ttsVoice = 'android:' + settings.voiceURI; delete settings.voiceURI; }
-if (settings.videoInMemory) { settings.videoMode = 'sw'; delete settings.videoInMemory; } // 1.1.20 → 1.1.22
 const saveSettings = () => store.saveSettings(settings);
 
 // ---------- state ----------
@@ -626,78 +624,16 @@ function stopListening() {
 }
 
 // ---------- video ----------
-// Some browsers (Edge on Android) stall playing a stored video through a blob: link: the size loads, the picture
-// never does. Then the app switches to serving it like a website video from the app's offline helper, and
-// remembers that for this device. Ways to play, in order: 'blob' (default), 'sw' (served), 'memory' (last resort).
-let videoBlob = null, videoMode = 'blob', vStallTimer = null;
-// Full pictures far apart: jumping in the video can freeze on some phones (seen on Pixels with Chrome-based browsers;
-// a Zoom recording with one every 30 s froze, the same video with one every second played fine).
-let videoKf = null;
-const KF_WARN = 8;
-async function checkKeyframes(blob) {
-  videoKf = null;
-  const r = await keyframeGap(blob);
-  if (videoBlob !== blob) return;
-  videoKf = r;
-  dbg('video', r ? `full picture at most every ${r.maxGap.toFixed(1)} s` : 'couldn’t read how often it has a full picture');
-  renderFiles();
-  const phone = /Android|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 0 && Math.min(screen.width, screen.height) < 900);
-  let warned = [];
-  try { warned = JSON.parse(localStorage.getItem('vo-prompter-kf-warned') || '[]'); } catch (e) { /* ignore */ }
-  const key = project ? project.id : '';
-  if (r && r.maxGap > KF_WARN && phone && !warned.includes(key)) {
-    try { localStorage.setItem('vo-prompter-kf-warned', JSON.stringify([...warned, key].slice(-50))); } catch (e) { /* ignore */ }
-    toast(`This video has a full picture only every ${Math.round(r.maxGap)} s. On some phones that makes jumping in it freeze. If it does, see Files.`, 9000);
-  }
-}
-function setVideoSrc(blob, how) {
-  if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
-  if (!how && blob !== videoBlob) { videoBlob = blob; checkKeyframes(blob); }
-  videoBlob = blob;
-  const canServe = !!(navigator.serviceWorker && navigator.serviceWorker.controller && project && project.videoName);
-  videoMode = how || (settings.videoMode === 'sw' && canServe ? 'sw' : 'blob');
-  if (videoMode === 'sw') videoURL = 'local-video/' + encodeURIComponent(project.id) + '?v=' + Date.now();
-  else videoURL = URL.createObjectURL(blob);
-  dbg('video', 'playing from ' + videoMode);
+function setVideoSrc(blob) {
+  if (videoURL) URL.revokeObjectURL(videoURL);
+  videoURL = URL.createObjectURL(blob);
   video.src = videoURL;
   video.muted = !sound;
   document.body.classList.remove('no-video');
   layout();
-  armVideoStall();
 }
-async function loadVideoIntoMemory(at) {
-  const src = videoBlob;
-  if (!src || src.size >= 600e6) return;
-  dbg('video', `reading the video into memory (${Math.round(src.size / 1e6)} MB)`);
-  try {
-    const mem = new Blob([await src.arrayBuffer()], { type: src.type || 'video/mp4' });
-    if (videoBlob !== src) return;
-    setVideoSrc(mem, 'memory');
-    if (at > 0) seekVideo(at, 'resume');
-  } catch (e) { noteError('video into memory: ' + e.message); dbg('video', 'into memory failed: ' + e.message); }
-}
-function armVideoStall() {
-  clearTimeout(vStallTimer);
-  if (!hasVideo() || videoMode === 'memory') return;
-  vStallTimer = setTimeout(() => {
-    if (!hasVideo() || video.readyState >= 2) return;
-    const at = video.currentTime;
-    if (videoMode === 'blob' && navigator.serviceWorker && navigator.serviceWorker.controller && project && project.videoName) {
-      dbg('video', 'no picture data after 8 s: serving it like a website video');
-      settings.videoMode = 'sw'; saveSettings();
-      setVideoSrc(videoBlob, 'sw');
-      if (at > 0) seekVideo(at, 'resume');
-    } else {
-      dbg('video', 'no picture data after 8 s: playing from memory');
-      loadVideoIntoMemory(at);
-    }
-  }, 8000);
-}
-video.addEventListener('seeking', armVideoStall);
-video.addEventListener('stalled', armVideoStall);
 function clearVideo() {
-  clearTimeout(vStallTimer); videoBlob = null; videoMode = 'blob'; pendingSeek = null;
-  if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
+  if (videoURL) URL.revokeObjectURL(videoURL);
   videoURL = null;
   video.removeAttribute('src'); video.load();
   document.body.classList.add('no-video');
@@ -734,31 +670,11 @@ video.addEventListener('pause', () => { renderPlay(); wantAwake(); });
 function updateVTime() { $('#vTime').textContent = `${fmtTime(video.currentTime)} / ${fmtTime(video.duration)}`; }
 function renderPlay() { const playing = !video.paused; $('#icoPlay').toggleAttribute('hidden', playing); $('#icoPause').toggleAttribute('hidden', !playing); $('#vPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
 
-// All jumps in the video go through here. Phones with Chrome-based browsers (seen on Pixels) get stuck for good, and
-// keep the video decoder stuck for a while, when a video is jumped far before its first picture is ready, or jumped
-// again while a jump is still going. So a jump waits for the first picture, and jumps made meanwhile collapse into
-// the last one.
-let pendingSeek = null;
-function seekVideo(t, why) {
-  if (!hasVideo() || !(t >= 0)) return;
-  vRate = 0;
-  if (video.readyState < 2 || video.seeking) {
-    if (pendingSeek === null) dbg('video', `${why} jump to ${t.toFixed(1)} s waits (${video.seeking ? 'still jumping' : 'no picture yet'})`);
-    pendingSeek = t;
-    return;
-  }
-  pendingSeek = null;
-  dbg('video', `${why} jump ${video.currentTime.toFixed(1)} → ${t.toFixed(1)} s`);
-  video.currentTime = t;
-}
-function flushSeek() { if (pendingSeek !== null && video.readyState >= 2 && !video.seeking) { const t = pendingSeek; pendingSeek = null; seekVideo(t, 'waiting'); } }
-video.addEventListener('loadeddata', flushSeek);
-video.addEventListener('canplay', flushSeek);
-video.addEventListener('seeked', flushSeek);
 function seekVideoToPos() {
   if (!hasVideo() || !model || !model.times || video.readyState < 1) return;
   const p = tts && tts.cur >= 0 ? model.tokens[tts.cur].u0 : follower.pos;
-  seekVideo(timeAt(model.times, p), 'reading spot');
+  video.currentTime = timeAt(model.times, p);
+  vRate = 0;
 }
 
 function setFollow(on) {
@@ -847,7 +763,7 @@ function tick() {
   const target = timeAt(model.times, p);
   const err = target - video.currentTime;
   // phones' video decoders can't keep up much past ×4 (the picture goes black), so a big gap is a jump instead
-  if (err > 12 || err < -4) { if (!video.seeking && pendingSeek === null) seekVideo(target, 'follow'); return; }
+  if (err > 12 || err < -4) { video.currentTime = target; vRate = 0; return; }
   const slope = timeAt(model.times, p + 1) - timeAt(model.times, p);
   const desired = slope * d.rate + err / 1.2;
   vRate += (desired - vRate) * Math.min(1, dt / 0.35);
@@ -871,8 +787,8 @@ $('#vPlay').onclick = () => {
   if (video.paused) { setFollow(false); video.playbackRate = 1; video.play().catch(() => {}); }
   else { setFollow(false); video.pause(); }
 };
-$('#vBack').onclick = () => { if (!hasVideo()) return; setFollow(false); seekVideo(Math.max(0, video.currentTime - 5), 'back 5'); };
-$('#vFwd').onclick = () => { if (!hasVideo()) return; setFollow(false); seekVideo(Math.min(video.duration || 0, video.currentTime + 5), 'ahead 5'); };
+$('#vBack').onclick = () => { if (!hasVideo()) return; setFollow(false); video.currentTime = Math.max(0, video.currentTime - 5); };
+$('#vFwd').onclick = () => { if (!hasVideo()) return; setFollow(false); video.currentTime = Math.min(video.duration || 0, video.currentTime + 5); };
 $('#vFollow').onclick = () => { if (follow) setFollow(false); else { video.pause(); setFollow(true); } };
 $('#vSound').onclick = () => setSound(!sound);
 
@@ -1158,12 +1074,11 @@ async function openScriptFile(file) {
 
 async function openVideoFile(file) {
   if (!project) { toast('Open a script first.'); return; }
+  setVideoSrc(file);
   project.videoName = file.name;
   saveProject();
   try { await store.putVideo(project.id, file); }
-  catch (e) { project.videoName = null; toast('Couldn’t keep the video on this device; you’ll need to add it again next time.', 5000); }
-  setVideoSrc(file);
-  if (!project.videoName) { project.videoName = file.name; saveProject(); }
+  catch (e) { toast('Couldn’t keep the video on this device; you’ll need to add it again next time.', 5000); }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   renderFiles();
 }
@@ -1233,7 +1148,7 @@ docEl.addEventListener('click', (e) => {
     const t = +stamp.dataset.time;
     const pb = model.blocks.find((b) => b.pid === para.dataset.pid);
     if (pb && pb.u1 > pb.u0) follower.jumpTo(pb.u0, false);
-    seekVideo(t, 'timestamp');
+    video.currentTime = t; vRate = 0;
     return;
   }
   if (!w) return;
@@ -1244,7 +1159,7 @@ docEl.addEventListener('click', (e) => {
   // read mode: jump the reading spot and the video
   const wasPlaying = hasVideo() && !video.paused && !follow;
   follower.jumpTo(tok.u0, true);
-  if (hasVideo() && model.times) { seekVideo(timeAt(model.times, tok.u0), 'tap'); if (wasPlaying) video.play().catch(() => {}); }
+  if (hasVideo() && model.times) { video.currentTime = timeAt(model.times, tok.u0); vRate = 0; if (wasPlaying) video.play().catch(() => {}); }
   userScrollUntil = 0;
   scrollToCurrent(true);
 });
@@ -1600,7 +1515,7 @@ function renderFiles() {
   $('#fOpenVideo').disabled = !has;
   $('#fOpenVideo').textContent = project && project.videoName ? 'Replace video…' : 'Add video…';
   $('#fRemoveVideo').hidden = !(project && project.videoName);
-  $('#fVideoNote').textContent = !has ? 'Open a script first.' : project.videoName ? `Video: ${project.videoName}` + (videoKf && videoKf.maxGap > KF_WARN ? ` · It has a full picture only every ${Math.round(videoKf.maxGap)} s, which can make jumping in it freeze on some phones (seen on Pixels in Chrome, Edge and Brave). If that happens, use a copy made with a full picture every second (in HandBrake or Media Encoder: keyframe interval 1 s, or ffmpeg -g 25 for 25 fps video).` : '') : 'No video. Add the video the script’s timestamps refer to.';
+  $('#fVideoNote').textContent = !has ? 'Open a script first.' : project.videoName ? `Video: ${project.videoName}` : 'No video. Add the video the script’s timestamps refer to.';
   for (const id of ['#fExportDocx', '#fExportTxt', '#fClearMarks']) $(id).disabled = !has;
   fillProjectList($('#projList'));
   renderVo();
@@ -1656,7 +1571,7 @@ async function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
-  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug; $('#lnkVcheck').hidden = !settings.debug;
+  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug;
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
@@ -1679,7 +1594,7 @@ bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
 $('#selDebug').onchange = (e) => {
-  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug; $('#lnkVcheck').hidden = !settings.debug;
+  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug;
   if (settings.debug) {
     dbgLog.length = 0; dbgT0 = performance.now();
     dbg('start', `VO Prompter ${VERSION} · ${navigator.userAgent}`);
@@ -1687,39 +1602,6 @@ $('#selDebug').onchange = (e) => {
     dbg('voices', `${vs.length} system voices; English: ` + englishVoices().map((v) => `${v.name} [${v.lang}${v.localService ? ', local' : ', online'}${v.default ? ', default' : ''}]`).join('; '));
   }
 };
-// Video test (debug): plays the script's video in a plain player, step by step, to find which step a browser trips on.
-$('#btnVidTest').onclick = async () => {
-  if (!hasVideo() || !videoBlob) { toast('Add a video to this script first.'); return; }
-  $('#dlgSettings').close(); $('#dlgVidTest').showModal();
-  const v = $('#vtVideo'), out = $('#vtOut');
-  try { video.pause(); } catch (e) { /* ignore */ }
-  const say = (m) => { out.textContent += m + '\n'; dbg('vtest', m); };
-  out.textContent = '';
-  const st = () => { const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : { totalVideoFrames: '?' }; return `t ${v.currentTime.toFixed(1)} ready ${v.readyState} frames ${q.totalVideoFrames}${v.error ? ' error ' + v.error.code : ''}`; };
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const run = async (label, src, seekTo) => {
-    v.pause(); v.removeAttribute('src'); v.load();
-    v.src = src;
-    const t0 = performance.now();
-    await new Promise((r) => { v.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 8000); });
-    say(`${label}: metadata after ${Math.round(performance.now() - t0)} ms · ${v.videoWidth}x${v.videoHeight}`);
-    if (seekTo) { v.currentTime = seekTo; await new Promise((r) => { v.addEventListener('seeked', r, { once: true }); setTimeout(r, 8000); }); say(`  after jump to ${seekTo} s: ${st()}`); }
-    try { await v.play(); } catch (e) { say('  play() refused: ' + e.message); }
-    await wait(5000);
-    say(`  after 5 s playing: ${st()}`);
-    v.pause();
-  };
-  const blobUrl = URL.createObjectURL(videoBlob);
-  const swUrl = navigator.serviceWorker && navigator.serviceWorker.controller && project ? 'local-video/' + encodeURIComponent(project.id) + '?t=' + Date.now() : null;
-  try {
-    say(`App's own player now: ${video.readyState} ready, mode ${videoMode}`);
-    await run('1. stored file, from the start', blobUrl, 0);
-    await run('2. stored file, jump to 7:36', blobUrl, 456);
-    if (swUrl) { await run('3. served file, from the start', swUrl, 0); await run('4. served file, jump to 7:36', swUrl, 456); }
-    say('Done. Copy the debug log (Settings) and send it.');
-  } finally { URL.revokeObjectURL(blobUrl); }
-};
-$('#dlgVidTest').addEventListener('close', () => { const v = $('#vtVideo'); v.pause(); v.removeAttribute('src'); v.load(); });
 $('#btnDbg').onclick = async () => {
   const text = (await diagText()) + '\n\nDebug log:\n' + (dbgLog.join('\n') || '(empty)');
   let ok = true;
@@ -1801,8 +1683,7 @@ async function diagText() {
     `Script: ${model ? `${model.N} words, ${model.blocks.length} paragraphs, ${model.anchors.length} timestamps` : 'none'} · video: ${hasVideo() ? 'yes' : 'no'}`,
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
-    `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'} · full picture every ${videoKf ? videoKf.maxGap.toFixed(1) + ' s at most' : '?'}`; })() : 'none'}`,
-    `Storage: ${await (async () => { try { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; const per = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : 'n/a'; return `persistent ${per} · used ${e ? Math.round(e.usage / 1e6) : '?'} MB of ${e ? Math.round(e.quota / 1e6) : '?'} MB`; } catch (x) { return 'unavailable'; } })()} · video from ${hasVideo() ? videoMode : '-'}${settings.videoMode ? ' (device setting: ' + settings.videoMode + ')' : ''} · offline helper ${navigator.serviceWorker && navigator.serviceWorker.controller ? 'active' : 'not active'}`,
+    `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

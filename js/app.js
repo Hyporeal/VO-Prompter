@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.20';
+const VERSION = '1.1.21';
 const $ = (s) => document.querySelector(s);
 
 const DEFAULTS = {
@@ -1715,6 +1715,7 @@ async function diagText() {
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
     `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
+    `Storage: ${await (async () => { try { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; const per = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : 'n/a'; return `persistent ${per} · used ${e ? Math.round(e.usage / 1e6) : '?'} MB of ${e ? Math.round(e.quota / 1e6) : '?'} MB`; } catch (x) { return 'unavailable'; } })()} · video from ${hasVideo() ? (videoInMemory ? 'memory' : 'storage') : '-'}${settings.videoInMemory ? ' (memory on this device)' : ''}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

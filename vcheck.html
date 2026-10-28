@@ -94,6 +94,7 @@ async function trial(name, opt) {
     const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : { totalVideoFrames: '?' };
     const moved = v.currentTime - t0;
     const ok = moved > 2 && v.readyState >= 2;
+    if (!ok) { const b = []; for (let i = 0; i < v.buffered.length; i++) b.push(`${v.buffered.start(i).toFixed(0)}-${v.buffered.end(i).toFixed(0)}`); ev.push(`at ${v.currentTime.toFixed(1)} s · net ${v.networkState} · loaded ${b.join(' ') || 'nothing'}`); }
     note(`${ok ? 'PASS' : 'FAIL'} · ${name} · moved ${moved.toFixed(1)} s · ready ${v.readyState} · frames ${q.totalVideoFrames}${v.error ? ' · error ' + v.error.code : ''}${ev.length ? ' · ' + [...new Set(ev)].join(', ') : ''}`, ok ? 'ok' : 'bad');
   } catch (e) {
     note(`FAIL · ${name} · ${e.message}`, 'bad');
@@ -118,22 +119,21 @@ $('#run').onclick = async () => {
   // Safest first. A jump that gets stuck can leave the phone's video decoder stuck for a while, so each jump is
   // followed by a plain check that shows whether the next test can be trusted.
   const plain = (n) => [`${n} plain check`, {}];
+  const served = storedId && navigator.serviceWorker && navigator.serviceWorker.controller;
+  note(`video: ${Math.round(blob.size / 1048576)} MB${served ? ' · offline helper on' : ''}`);
   const T = [
     ['1 plain, from the start', {}],
     ['2 with sound', { muted: false }],
     ['3 speed changes', { rates: [1.3, 0.8, 1.6] }],
-    ['4 natural-voice audio open', { before: tone(0, 'playback') }],
-    ['5 jump to 7:36 after the first picture shows', { seek: 456, when: 'frame' }],
-    plain(6),
-    ['7 play 1.5 s, then jump to 7:36', { seek: 456, when: 'playing' }],
-    plain(8),
-    ['9 jump to 0:10 right away', { seek: 10 }],
-    plain(10),
-    ['11 jump to 7:30 right away', { seek: 450 }],
-    plain(12),
-    ['13 jump to 7:36 right away (what the app did)', { seek: 456 }],
-    plain(14),
+    ['4 jump to 0:10 after the first picture', { seek: 10, when: 'frame' }],
+    plain(5),
+    ['6 jump to 1:00 after the first picture', { seek: 60, when: 'frame' }],
+    plain(7),
+    ['8 jump to 7:36 after the first picture, with sound', { seek: 456, when: 'frame', muted: false }],
+    plain(9),
   ];
+  if (served) T.push(['10 served by the app, jump to 7:36 after the first picture', { seek: 456, when: 'frame', served: true }], plain(11));
+  T.push(['12 jump to 7:36 after the first picture, metadata preload', { seek: 456, when: 'frame', preload: 'metadata' }], plain(13));
   for (const [n, o] of T) await trial(n, o);
   note('Done');
   $('#run').disabled = false; $('#copy').disabled = false;

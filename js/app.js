@@ -10,8 +10,8 @@ import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
 
-// Defaults are what John reads with in the booth (dim each finished sentence, fill the whole sentence as the guide,
-// more overlap, slow and steady scrolling one sentence at a time).
+// Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
+// the guide, more overlap, slow and steady scrolling one sentence at a time).
 const DEFAULTS = {
   textSize: 18, said: 'sent', guide: 'fill', span: 'sentence', overlap: 'more', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'all',

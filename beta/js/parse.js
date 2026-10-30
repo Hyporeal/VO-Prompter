@@ -14,13 +14,31 @@ import { readZipIndex, readZipText, writeZip } from './zip.js';
 
 // ---------- file reading ----------
 
+// Word (.docx), EPUB, OpenDocument (.odt), RTF, PDF, web pages, subtitles (.srt/.vtt), Final Draft (.fdx),
+// Fountain, Markdown and plain text. Everything is read on the device.
 export async function fileToParagraphs(file) {
   const name = (file.name || '').toLowerCase();
+  const ext = (name.match(/\.([a-z0-9]+)$/) || [])[1] || '';
   const buf = await file.arrayBuffer();
-  const head = new Uint8Array(buf.slice(0, 4));
-  if (name.endsWith('.docx') || (head[0] === 0x50 && head[1] === 0x4b)) return docxToParagraphs(buf);
-  let text = new TextDecoder().decode(buf).replace(/^﻿/, '');
-  if (name.endsWith('.md')) text = text.replace(/\\([\[\]'"*_#\\.!-])/g, '$1');
+  const head = new Uint8Array(buf.slice(0, 8));
+  if (head[0] === 0x50 && head[1] === 0x4b) { // a zip: Word, EPUB or OpenDocument
+    const zip = readZipIndex(buf);
+    if (zip.entries.has('word/document.xml')) return docxToParagraphs(buf, zip);
+    if (zip.entries.has('META-INF/container.xml')) return epubToParagraphs(zip);
+    if (zip.entries.has('content.xml')) return odtToParagraphs(zip);
+    throw new Error('this kind of file isn’t supported (try .docx, .epub, .odt, .pdf, .rtf or .txt)');
+  }
+  if (ext === 'pdf' || String.fromCharCode(...head.slice(0, 5)) === '%PDF-') return pdfToParagraphs(buf);
+  if (head[0] === 0xd0 && head[1] === 0xcf && head[2] === 0x11 && head[3] === 0xe0) {
+    throw new Error('this is an older Word file (.doc). Save it as .docx in Word (File → Save As) and open that');
+  }
+  let text = decodeText(buf);
+  if (ext === 'rtf' || /^\s*\{\\rtf/.test(text)) return rtfToParagraphs(text);
+  if (ext === 'fdx' || /^\s*(<\?xml[^>]*>\s*)?<FinalDraft/i.test(text)) return fdxToParagraphs(text);
+  if (/^(html?|xhtml)$/.test(ext) || /^\s*(<!doctype html|<html)/i.test(text)) return htmlToParagraphs(text, ext === 'xhtml');
+  if (ext === 'srt' || ext === 'vtt' || /^WEBVTT/.test(text) || /^\s*\d+\s*\n\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->/.test(text)) return subtitlesToParagraphs(text);
+  if (ext === 'fountain') return fountainToParagraphs(text);
+  if (ext === 'md' || ext === 'markdown') text = markdownToText(text);
   return textToParagraphs(text);
 }
 
@@ -28,10 +46,297 @@ export function textToParagraphs(text) {
   return text.replace(/\r\n?/g, '\n').split('\n').map((s) => s.trim()).filter(Boolean);
 }
 
+// UTF-8 or UTF-16 by their marks; older Windows files that aren't valid UTF-8 are read as Windows-1252.
+function decodeText(buf) {
+  const b = new Uint8Array(buf);
+  if (b[0] === 0xff && b[1] === 0xfe) return new TextDecoder('utf-16le').decode(b.subarray(2));
+  if (b[0] === 0xfe && b[1] === 0xff) return new TextDecoder('utf-16be').decode(b.subarray(2));
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(b).replace(/^﻿/, ''); }
+  catch (e) { return new TextDecoder('windows-1252').decode(b); }
+}
+
+function markdownToText(t) {
+  return t.replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/^\s*```.*$/gm, '')
+    .replace(/\\([\[\]'"*_#\\.!-])/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')            // images
+    .replace(/\[([^\]]+)\]\((?:[^)]*)\)/g, '$1')       // links keep their text
+    .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2')   // bold
+    .replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?!\w)/g, '$1$2') // italics
+    .replace(/(^|\W)_(?=\S)([^_\n]*?\S)_(?!\w)/g, '$1$2')
+    .replace(/^\s{0,3}>\s?/gm, '')                    // quotes
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '');       // list markers
+}
+
+// ---------- web pages and EPUB ----------
+const BLOCK_TAGS = new Set(['p', 'div', 'section', 'article', 'header', 'footer', 'aside', 'main', 'nav', 'blockquote', 'pre', 'ul', 'ol', 'li',
+  'dl', 'dt', 'dd', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'figure', 'figcaption', 'caption', 'address', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'body', 'center']);
+const SKIP_TAGS = new Set(['script', 'style', 'head', 'noscript', 'template', 'svg', 'math', 'del', 's', 'strike', 'rt', 'rp', 'button', 'select', 'iframe', 'object', 'video', 'audio']);
+export function htmlToParagraphs(html, xhtml) {
+  let doc = new DOMParser().parseFromString(html, xhtml ? 'application/xhtml+xml' : 'text/html');
+  if (xhtml && doc.getElementsByTagName('parsererror').length) doc = new DOMParser().parseFromString(html, 'text/html');
+  const out = [];
+  let buf = '', pre = 0;
+  const BR = '\u2028'; // a line break the page asked for (<br>, or a new line inside <pre>)
+  const flush = (heading) => {
+    for (const line of buf.split(BR)) { const t = line.replace(/\s+/g, ' ').trim(); if (t) out.push(heading ? '# ' + t : t); }
+    buf = '';
+  };
+  const hidden = (el) => { const st = (el.getAttribute && el.getAttribute('style')) || ''; return el.hidden || /display\s*:\s*none|visibility\s*:\s*hidden/i.test(st) || /line-through/i.test(st); };
+  function walk(node) {
+    for (const c of node.childNodes) {
+      if (c.nodeType === 3) { buf += pre ? c.nodeValue.replace(/\n/g, BR) : c.nodeValue; continue; }
+      if (c.nodeType !== 1) continue;
+      const tag = (c.localName || '').toLowerCase();
+      if (SKIP_TAGS.has(tag) || hidden(c)) continue;
+      if (tag === 'br') { buf += BR; continue; }
+      if (tag === 'pre') { flush(); pre++; walk(c); pre--; flush(); continue; }
+      if (/^h[1-6]$/.test(tag)) { flush(); walk(c); flush(true); continue; }
+      if (BLOCK_TAGS.has(tag)) { flush(); walk(c); flush(); continue; }
+      if (tag === 'td' || tag === 'th') { buf += ' '; walk(c); buf += ' '; continue; }
+      walk(c);
+    }
+  }
+  walk(doc.body || doc.documentElement);
+  flush();
+  return out;
+}
+
+async function epubToParagraphs(zip) {
+  const container = await readZipText(zip, 'META-INF/container.xml');
+  const rootPath = (container.match(/full-path\s*=\s*"([^"]+)"/) || [])[1];
+  if (!rootPath) throw new Error('this EPUB has no contents list');
+  const opf = new DOMParser().parseFromString(await readZipText(zip, rootPath) || '', 'application/xml');
+  const base = rootPath.includes('/') ? rootPath.slice(0, rootPath.lastIndexOf('/') + 1) : '';
+  const items = new Map();
+  for (const it of opf.getElementsByTagNameNS('*', 'item')) items.set(it.getAttribute('id'), { href: it.getAttribute('href'), type: it.getAttribute('media-type') || '' });
+  const out = [];
+  for (const ref of opf.getElementsByTagNameNS('*', 'itemref')) {
+    if (ref.getAttribute('linear') === 'no') continue;
+    const it = items.get(ref.getAttribute('idref'));
+    if (!it || !/html/.test(it.type)) continue;
+    const path = decodeURIComponent(new URL(it.href, 'http://x/' + base).pathname.slice(1));
+    const html = await readZipText(zip, path);
+    if (html) out.push(...htmlToParagraphs(html, /xhtml|xml/.test(it.type)));
+  }
+  return out;
+}
+
+// ---------- OpenDocument text (.odt) ----------
+async function odtToParagraphs(zip) {
+  const xml = await readZipText(zip, 'content.xml');
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  // styles that strike text through or hide it
+  const gone = new Set();
+  for (const st of doc.getElementsByTagNameNS('*', 'style')) {
+    const tp = [...st.children].find((c) => c.localName === 'text-properties');
+    if (!tp) continue;
+    const lt = tp.getAttribute('style:text-line-through-style'), disp = tp.getAttribute('text:display');
+    if ((lt && lt !== 'none') || disp === 'none') gone.add(st.getAttribute('style:name'));
+  }
+  const out = [];
+  const inline = (el) => {
+    let t = '';
+    for (const c of el.childNodes) {
+      if (c.nodeType === 3) { t += c.nodeValue; continue; }
+      if (c.nodeType !== 1) continue;
+      const n = c.localName;
+      if (n === 's') t += ' '.repeat(+(c.getAttribute('text:c') || 1));
+      else if (n === 'tab') t += ' ';
+      else if (n === 'line-break') t += '\n';
+      else if (n === 'note' || n === 'annotation' || n === 'tracked-changes') continue;
+      else if (n === 'span' && gone.has(c.getAttribute('text:style-name'))) continue;
+      else t += inline(c);
+    }
+    return t;
+  };
+  const push = (t, h) => { for (const line of t.split('\n')) { const s = line.replace(/\s+/g, ' ').trim(); if (s) out.push(h ? '# ' + s : s); } };
+  const walk = (el) => {
+    for (const c of el.children) {
+      const n = c.localName;
+      if (n === 'h') push(inline(c), true);
+      else if (n === 'p') { if (!gone.has(c.getAttribute('text:style-name'))) push(inline(c)); }
+      else if (n === 'tracked-changes' || n === 'sequence-decls' || n === 'variable-decls') continue;
+      else walk(c);
+    }
+  };
+  const body = doc.getElementsByTagNameNS('*', 'text')[0];
+  if (!body) throw new Error('this OpenDocument file has no text');
+  walk(body);
+  return out;
+}
+
+// ---------- RTF ----------
+const RTF_SKIP = new Set(['fonttbl', 'colortbl', 'stylesheet', 'info', 'pict', 'header', 'headerl', 'headerr', 'headerf', 'footer', 'footerl', 'footerr', 'footerf',
+  'object', 'themedata', 'colorschememapping', 'latentstyles', 'datastore', 'xmlnstbl', 'listtable', 'listoverridetable', 'rsidtbl', 'generator', 'filetbl',
+  'revtbl', 'shp', 'shpinst', 'nonshppict', 'footnote', 'annotation', 'atnid', 'atnauthor', 'pgdsctbl', 'mmathPr', 'fldinst', 'xe', 'tc', 'bkmkstart', 'bkmkend']);
+const RTF_CHAR = { emdash: '—', endash: '–', lquote: '‘', rquote: '’', ldblquote: '“', rdblquote: '”', bullet: '•', tab: ' ', emspace: ' ', enspace: ' ', qmspace: ' ' };
+export function rtfToParagraphs(rtf) {
+  const cp1252 = new TextDecoder('windows-1252');
+  let out = '', i = 0, toSkip = 0;
+  let st = { skip: false, uc: 1, strike: false, hidden: false };
+  const stack = [];
+  const emit = (ch) => { if (toSkip > 0) { toSkip--; return; } if (!st.skip && !st.strike && !st.hidden) out += ch; };
+  while (i < rtf.length) {
+    const ch = rtf[i];
+    if (ch === '{') { stack.push({ ...st }); i++; continue; }
+    if (ch === '}') { st = stack.pop() || st; i++; toSkip = 0; continue; }
+    if (ch === '\\') {
+      const nx = rtf[i + 1];
+      if (/[a-zA-Z]/.test(nx || '')) {
+        const m = /^([a-zA-Z]+)(-?\d+)? ?/.exec(rtf.slice(i + 1, i + 40));
+        const word = m[1], arg = m[2] !== undefined ? +m[2] : null;
+        i += 1 + m[0].length;
+        if (word === 'par' || word === 'line' || word === 'sect' || word === 'page' || word === 'row') { if (!st.skip) out += '\n'; }
+        else if (word === 'cell') emit(' ');
+        else if (word === 'u') { const c = arg < 0 ? arg + 65536 : arg; if (!st.skip && !st.strike && !st.hidden) out += String.fromCharCode(c); toSkip = st.uc; }
+        else if (word === 'uc') st.uc = arg ?? 1;
+        else if (word === 'strike' || word === 'striked' || word === 'strikedl') st.strike = arg !== 0;
+        else if (word === 'v') st.hidden = arg !== 0;
+        else if (word === 'plain') { st.strike = false; st.hidden = false; }
+        else if (RTF_CHAR[word]) emit(RTF_CHAR[word]);
+        else if (RTF_SKIP.has(word)) st.skip = true;
+        continue;
+      }
+      if (nx === '*') { st.skip = true; i += 2; continue; }
+      if (nx === "'") { const h = parseInt(rtf.substr(i + 2, 2), 16); if (!isNaN(h)) emit(cp1252.decode(new Uint8Array([h]))); i += 4; continue; }
+      if (nx === '\n' || nx === '\r') { if (!st.skip) out += '\n'; i += 2; continue; }
+      if (nx === '~') { emit(' '); i += 2; continue; }
+      if (nx === '_') { emit('-'); i += 2; continue; }
+      if (nx === '-') { i += 2; continue; }
+      emit(nx || ''); i += 2; continue;
+    }
+    if (ch === '\r' || ch === '\n') { i++; continue; }
+    emit(ch); i++;
+  }
+  return textToParagraphs(out);
+}
+
+// ---------- subtitles: each cue becomes a line that starts with its time ----------
+export function subtitlesToParagraphs(text) {
+  const out = [];
+  const blocks = text.replace(/\r\n?/g, '\n').split(/\n\s*\n/);
+  for (const b of blocks) {
+    const lines = b.split('\n').map((l) => l.trim()).filter(Boolean);
+    const k = lines.findIndex((l) => /-->/.test(l));
+    if (k < 0) continue;
+    const m = lines[k].match(/(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})/);
+    if (!m) continue;
+    const h = +(m[1] || 0), mi = +m[2], s = +m[3], ms = m[4].padEnd(3, '0');
+    const words = lines.slice(k + 1).join(' ').replace(/<[^>]+>/g, '').replace(/\{\\[^}]*\}/g, '').replace(/\s+/g, ' ').trim();
+    if (!words) continue;
+    const p2 = (n) => String(n).padStart(2, '0');
+    out.push(`${p2(h)}:${p2(mi)}:${p2(s)}.${ms} ${words}`);
+  }
+  return out;
+}
+
+// ---------- screenplays: Final Draft (.fdx) and Fountain ----------
+// Dialogue is the text to read; scene headings become section headings; character names, transitions and
+// action show as notes (not read), and parentheticals as [(…)].
+export function fdxToParagraphs(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  const content = doc.getElementsByTagName('Content')[0] || doc.documentElement;
+  const out = [];
+  for (const p of content.getElementsByTagName('Paragraph')) {
+    if (p.parentNode && !/^(Content|DualDialogue)$/.test(p.parentNode.localName)) continue;
+    if (p.getElementsByTagName('DualDialogue').length) continue; // its two speeches are listed on their own
+    const type = p.getAttribute('Type') || '';
+    const text = [...p.getElementsByTagName('Text')].map((t) => t.textContent).join('').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    if (type === 'Scene Heading') out.push('# ' + text);
+    else if (type === 'Character' || type === 'Transition' || type === 'Shot' || type === 'Action' || type === 'Cast List') out.push('// ' + text);
+    else if (type === 'Parenthetical') out.push('[' + text + ']');
+    else out.push(text);
+  }
+  return out;
+}
+export function fountainToParagraphs(text) {
+  const t = text.replace(/\r\n?/g, '\n').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\[\[[\s\S]*?\]\]/g, '');
+  const lines = t.split('\n');
+  const out = [];
+  let inDialogue = false;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i], l = raw.trim();
+    if (!l) { inDialogue = false; continue; }
+    if (/^(title|credit|author|source|draft date|contact):/i.test(l) && i < 12) continue;
+    if (/^=/.test(l)) continue; // synopsis
+    if (/^#/.test(l)) { out.push('# ' + l.replace(/^#+\s*/, '')); continue; }
+    if (/^\./.test(l) || /^(INT|EXT|EST|INT\.\/EXT|INT\/EXT|I\/E)[ .]/i.test(l)) { out.push('# ' + l.replace(/^\./, '')); continue; }
+    if (/^>.*<$/.test(l)) { out.push(l.slice(1, -1).trim()); continue; }
+    if (/^>/.test(l) || (/^[A-Z\s]+TO:$/.test(l))) { out.push('// ' + l.replace(/^>\s*/, '')); continue; }
+    const next = (lines[i + 1] || '').trim();
+    if (!inDialogue && (/^@/.test(l) || (/^[A-Z0-9 ._'’-]+(\s*\([^)]*\))?\s*\^?$/.test(l) && /[A-Z]/.test(l) && next && (i === 0 || !lines[i - 1].trim())))) {
+      out.push('// ' + l.replace(/^@/, '')); inDialogue = true; continue;
+    }
+    if (inDialogue && /^\(.*\)$/.test(l)) { out.push('[' + l + ']'); continue; }
+    if (inDialogue) { out.push(l.replace(/^~/, '')); continue; }
+    out.push('// ' + l.replace(/^!/, ''));
+  }
+  return out;
+}
+
+// ---------- PDF (text only, with PDF.js, loaded the first time a PDF is opened) ----------
+// Lines are rebuilt from where the text sits on each page; a bigger gap than usual, an indent or a short line
+// that ends a sentence starts a new paragraph. Page numbers are dropped.
+let pdfjsP = null;
+async function pdfToParagraphs(buf) {
+  if (!pdfjsP) pdfjsP = import(new URL('../vendor/pdfjs/pdf.min.mjs', location.href).href).then((m) => { m.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', location.href).href; return m; });
+  const pdfjs = await pdfjsP;
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf), isEvalSupported: false, useSystemFonts: false }).promise;
+  const out = [];
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n);
+    const tc = await page.getTextContent();
+    const lines = [];
+    for (const it of tc.items) {
+      if (!it.str || !it.transform) continue;
+      const x = it.transform[4], y = it.transform[5], h = Math.abs(it.transform[3]) || it.height || 10;
+      let line = lines.find((l) => Math.abs(l.y - y) < h * 0.45);
+      if (!line) { line = { y, h, items: [] }; lines.push(line); }
+      line.items.push({ x, w: it.width || 0, s: it.str, h });
+    }
+    lines.sort((a, b) => b.y - a.y);
+    const built = lines.map((l) => {
+      l.items.sort((a, b) => a.x - b.x);
+      let s = '', end = -1e9;
+      for (const it of l.items) {
+        if (s && it.x - end > it.h * 0.18 && !/\s$/.test(s) && !/^\s/.test(it.s)) s += ' ';
+        s += it.s; end = it.x + it.w;
+      }
+      return { y: l.y, h: l.h, x: l.items[0] ? l.items[0].x : 0, right: end, s: s.replace(/\s+/g, ' ').trim() };
+    }).filter((l) => l.s && !/^(page\s*)?\d{1,4}(\s*(of|\/)\s*\d{1,4})?$/i.test(l.s));
+    if (!built.length) continue;
+    // normal line spacing, as a multiple of the font size: a low percentile of the gaps, so pages made mostly of
+    // one-line paragraphs still show their wrapped lines' spacing
+    const ratios = [];
+    for (let i = 1; i < built.length; i++) ratios.push((built[i - 1].y - built[i].y) / Math.max(built[i - 1].h, built[i].h));
+    ratios.sort((a, b) => a - b);
+    const normal = ratios.length ? Math.max(1, ratios[Math.floor(ratios.length * 0.2)]) : 1.2;
+    const left = Math.min(...built.map((l) => l.x)), right = Math.max(...built.map((l) => l.right));
+    let para = '';
+    built.forEach((l, i) => {
+      const prev = built[i - 1];
+      const hm = prev ? Math.max(prev.h, l.h) : l.h;
+      const brk = !prev || (prev.y - l.y) / hm > normal * 1.2 + 0.1
+        || Math.abs(prev.h - l.h) > hm * 0.15                                  // a heading or other change of size
+        || (l.x - left > l.h * 1.2 && prev.x - left < l.h * 0.5)                  // an indented first line
+        || /^(\[|#|\/\/|\d{1,2}:\d{2}(:\d{2})?\b)/.test(l.s)                    // a direction, heading, note or timestamp
+        || (/[.!?:"”]$/.test(prev.s) && prev.right < right - (right - left) * 0.2); // a short line that ends a sentence
+      if (brk && para) { out.push(para); para = ''; }
+      if (para && /[a-z]-$/.test(para) && /^[a-z]/.test(l.s)) para = para.slice(0, -1) + l.s; // a word split over two lines
+      else para += (para ? ' ' : '') + l.s;
+    });
+    if (para) out.push(para);
+  }
+  try { doc.destroy(); } catch (e) { /* ignore */ }
+  return out;
+}
+
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
-export async function docxToParagraphs(buf) {
-  const zip = readZipIndex(buf);
+export async function docxToParagraphs(buf, zipIn) {
+  const zip = zipIn || readZipIndex(buf);
   const xml = await readZipText(zip, 'word/document.xml');
   if (!xml) throw new Error('This Word file has no document body');
   const headingStyles = new Set();

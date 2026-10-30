@@ -28,6 +28,10 @@ follow this list. The fonts' licenses (SIL Open Font License 1.1) are in fonts/.
 5. Piper voices are not included: they download on request from https://huggingface.co/rhasspy/piper-voices,
    and each voice's license is in its model card there.
 
+6. PDF.js 5.7.284 (vendor/pdfjs/pdf.min.mjs, vendor/pdfjs/pdf.worker.min.mjs), from the pdfjs-dist package,
+   used to read the text of PDF scripts. Copyright Mozilla Foundation and PDF.js contributors.
+   https://github.com/mozilla/pdf.js. License: Apache License 2.0 (text A).
+
 
 ====================================================================================================
 TEXT A: Apache License 2.0

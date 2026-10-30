@@ -6,20 +6,22 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
-import { keyframeGap } from './mp4info.js';
 
-const VERSION = '1.1.26 beta';
+const VERSION = '1.1.29 beta';
 const $ = (s) => document.querySelector(s);
 
+// Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
+// the guide, more overlap, slow and steady scrolling one sentence at a time).
 const DEFAULTS = {
-  textSize: 28, said: 'hl', guide: 'under', span: 'word', overlap: 'some', theme: 'dark',
-  engine: 'device', micSource: 'builtin', marks: 'skips',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 3, scrollEvery: 2, scrollStyle: 'pause', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
+  textSize: 18, said: 'sent', guide: 'fill', span: 'sentence', overlap: 'more', theme: 'dark',
+  engine: 'device', micSource: 'builtin', marks: 'all',
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'slow', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
+  view: 'auto', uiScale: 100, uiText: 100,
 };
 const settings = store.loadSettings(DEFAULTS);
+if (settings.desktop && (!settings.view || settings.view === 'auto') && !settings.viewSet) settings.view = 'desktop'; // the 1.1.28 checkbox
 if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
 if (settings.voiceURI !== undefined) { settings.ttsVoice = 'android:' + settings.voiceURI; delete settings.voiceURI; }
-if (settings.videoInMemory) { settings.videoMode = 'sw'; delete settings.videoInMemory; } // 1.1.20 → 1.1.22
 const saveSettings = () => store.saveSettings(settings);
 
 // ---------- state ----------
@@ -40,6 +42,7 @@ let curTake = null; // the listening stretch being recorded (Settings → Save t
 let findTok = new Uint8Array(0), findGroup = new Int32Array(0); // find: 1 = a match, 2 = the current match
 let hlTok = new Uint8Array(0), hlGroup = new Int32Array(0);     // your highlights: colour index per word
 let hlOn = false, hlStart = -1;
+let bmTok = new Uint8Array(0);                                  // your bookmarks: 1 on the bookmarked word
 let voTakes = [];                                               // your voice-over recordings for this script
 
 const follower = new Follower(onFollow);
@@ -134,9 +137,14 @@ function applySettings() {
   docEl.classList.toggle('guide-fill', settings.guide === 'fill');
   docEl.classList.toggle('marks', settings.marks !== 'off');
   docEl.classList.toggle('marks-all', settings.marks === 'all');
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim() || '#111316';
+  applyView();
+  if (settings.theme !== appliedTheme) { // reading the colour back costs a full style pass, so only when the theme changes
+    appliedTheme = settings.theme;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim() || '#111316';
+  }
 }
+let appliedTheme = null;
 
 // ---------- rendering ----------
 function renderEmpty() {
@@ -144,8 +152,8 @@ function renderEmpty() {
   const box = document.createElement('div');
   box.className = 'empty';
   box.innerHTML = `<h1>Open a script to start</h1>
-    <p>Word (.docx) or text files. Bracketed text like [SLIDE: …] isn't read. Timestamps like 00:01:30 at the start of a line tie the script to the video.</p>
-    <div class="btns"><button class="btn primary" data-act="open">Open a script…</button></div>
+    <p>Word, PDF, EPUB, OpenDocument, RTF, web page, subtitle (SRT, VTT), Final Draft or text files. Bracketed text like [SLIDE: …] isn't read. Timestamps like 00:01:30 at the start of a line tie the script to the video.</p>
+    <div class="btns"><button class="btn primary" data-act="open">New project from a script…</button></div>
     <div class="proj-list" id="emptyList"></div>`;
   docEl.appendChild(box);
   box.querySelector('[data-act="open"]').onclick = () => $('#fileScript').click();
@@ -170,52 +178,72 @@ function renderDoc() {
     const p = document.createElement('p');
     p.className = 'para k-' + b.kind;
     p.dataset.pid = b.pid;
-    let lastTok = -1;
+    let lastTok = -1, chars = 0;
     for (const part of b.parts) {
       if (part.type === 'w') {
         const s = document.createElement('span');
         s.className = 'w'; s.dataset.t = part.ti; s.textContent = model.tokens[part.ti].text;
-        tokEls[part.ti] = s; p.appendChild(s); lastTok = part.ti;
+        tokEls[part.ti] = s; p.appendChild(s); lastTok = part.ti; chars += model.tokens[part.ti].text.length;
       } else if (part.type === 'gap') {
         const g = document.createElement('span');
-        g.className = 'g'; g.textContent = part.text; p.appendChild(g);
+        g.className = 'g'; g.textContent = part.text; p.appendChild(g); chars += part.text.length;
         if (lastTok >= 0 && !gapEls[lastTok]) gapEls[lastTok] = g;
       } else if (part.type === 'stamp') {
         const s = document.createElement('span');
         s.className = 'stamp'; s.textContent = fmtTime(part.t); s.dataset.time = part.t; s.title = 'Video time: tap to jump the video here';
-        p.appendChild(s);
+        p.appendChild(s); chars += 5;
         lastTok = -1;
       } else {
         const s = document.createElement('span');
-        s.className = 'ns'; s.textContent = part.text; p.appendChild(s);
+        s.className = 'ns'; s.textContent = part.text; p.appendChild(s); chars += Math.ceil(part.text.length * 0.66) + 1;
         p.appendChild(document.createTextNode(' '));
         lastTok = -1;
       }
     }
+    p._chars = chars;
     if (isEdited(b.pid)) { const d = document.createElement('span'); d.className = 'edited-dot'; d.title = 'Edited'; p.appendChild(d); }
     frag.appendChild(p);
     paraEls.set(b.pid, p);
   }
-  if (mode === 'edit') {
-    const add = document.createElement('button');
-    add.className = 'btn add-end'; add.textContent = 'Add a paragraph at the end';
-    add.onclick = () => addParagraph(null);
-    frag.appendChild(add);
-  }
   docEl.appendChild(frag);
+  if (mode === 'edit') addEndButton(true);
   guideA = guideB = -1; lastFollowPos = follower.pos; lineMemo.slots = [];
   blockByPid = new Map(model.blocks.map((b) => [b.pid, b]));
   findTok = new Uint8Array(T); findGroup = new Int32Array(T);
-  buildHlTok();
+  estimateParas();
+  buildHlTok(); buildBmTok();
   if (findState.q) runFind(findState.q, false);
   updateClasses();
   paint();
+  tocDirty = true;
+}
+function addEndButton(on) {
+  const old = docEl.querySelector('.add-end');
+  if (!on) { if (old) old.remove(); return; }
+  if (old) return;
+  const add = document.createElement('button');
+  add.className = 'btn add-end'; add.textContent = 'Add a paragraph at the end';
+  add.onclick = () => addParagraph(null);
+  docEl.appendChild(add);
+}
+// Height estimate for paragraphs that haven't been on screen yet (see .doc > .para in the styles): their length
+// over the characters that fit on a line at this text size and width.
+function estimateParas() {
+  if (!paraEls.size) return;
+  const w = Math.max(160, (docEl.clientWidth || scriptEl.clientWidth) - 15);
+  const fs = settings.textSize;
+  for (const p of paraEls.values()) {
+    const size = p.classList.contains('k-spoken') ? fs : Math.max(fs * 0.62, 11);
+    const lines = Math.max(1, Math.ceil(((p._chars || 1) * size * 0.5) / w));
+    if (p._pl !== lines) { p._pl = lines; p.style.setProperty('--pl', lines); }
+  }
 }
 
 // ---------- painting ----------
 // Class changes are batched into one paint per frame (from the tick loop), and only words that could have
 // changed are touched. updateClasses() asks for a full repaint.
-let dirtyLo = Infinity, dirtyHi = -1, dirtyAll = false;
+let dirtyLo = Infinity, dirtyHi = -1, dirtyAll = false, snapFrames = 0;
+const paintBuf = { el: [], cls: [] };
 let guideA = -1, guideB = -1, lastFollowPos = 0, lastAnchor = 0, lastTrusted = 0;
 let blockByPid = new Map();
 const LAG = { device: 0.4, google: 0.7 }; // typical seconds between saying a word and the recognizer reporting it
@@ -235,7 +263,8 @@ function guideUnit() {
   const r = follower.rate();
   const since = performance.now() / 1000 - r.lastT;
   if (r.rate > 0 && since < 0.9) {
-    const lead = Math.min(1.2, r.rate * (LAG[settings.engine] || 0.4));
+    // how far you get, at your pace in syllables, during the recognizer's usual delay
+    const lead = Math.min(1.2, follower.sylRate() ? follower.aheadOf(u, LAG[settings.engine] || 0.4) - u : r.rate * (LAG[settings.engine] || 0.4));
     p = u + Math.floor(lead + 0.35);
     const sent = model.sentences[model.tokens[model.units[u].ti].sent];
     if (sent) p = Math.min(p, sent.u1 - 1);
@@ -333,6 +362,8 @@ function paint() {
   if (dirtyAll) { lo = 0; hi = T - 1; } else { lo = Math.max(0, dirtyLo - 1); hi = Math.min(T - 1, dirtyHi); }
   dirtyAll = false; dirtyLo = Infinity; dirtyHi = -1;
   const sentMode = settings.said === 'sent' || settings.said === 'sent2';
+  const chEl = paintBuf.el, chCls = paintBuf.cls;
+  chEl.length = 0; chCls.length = 0;
   if (hi >= lo) {
     let next = tokState(lo);
     for (let t = lo; t <= hi; t++) {
@@ -350,9 +381,10 @@ function paint() {
       if (fd) c += fd === 2 ? ' found-cur' : ' found';
       else if (hl) c += ' hl-' + HL_KEYS[hl];
       if (t === hlStart) c += ' hl-start';
+      if (bmTok[t]) c += ' bm';
       let inTts = false;
       if (tts) { inTts = t >= tts.t0 && t < tts.t1; if (inTts) c += ' tts-sent'; if (t === tts.cur) c += ' tts-word'; }
-      if (c !== tokCls[t]) { el.className = c; tokCls[t] = c; }
+      if (c !== tokCls[t]) { chEl.push(el); chCls.push(c); tokCls[t] = c; }
       const g = gapEls[t];
       if (g) {
         let gc = 'g';
@@ -362,10 +394,15 @@ function paint() {
         if (fd && t + 1 < T && findTok[t + 1] === fd && findGroup[t] === findGroup[t + 1]) gc += fd === 2 ? ' found-cur' : ' found';
         else if (hl && t + 1 < T && hlTok[t + 1] === hl && hlGroup[t] === hlGroup[t + 1]) gc += ' hl-' + HL_KEYS[hl];
         if (inTts && t + 1 < tts.t1) gc += ' tts-sent';
-        if (gc !== gapCls[t]) { g.className = gc; gapCls[t] = gc; }
+        if (gc !== gapCls[t]) { chEl.push(g); chCls.push(gc); gapCls[t] = gc; }
       }
     }
   }
+  // Many words changing at once (a jump, a mode or setting change) apply without the fades: thousands of words
+  // fading at the same time keep a slow device busy. Fades stay for the few words that change as you read.
+  if (chEl.length > 120) { if (!snapFrames) docEl.classList.add('snap'); snapFrames = 3; }
+  for (let i = 0; i < chEl.length; i++) chEl[i].className = chCls[i];
+  chEl.length = 0; chCls.length = 0;
 }
 
 // ---------- scrolling ----------
@@ -456,10 +493,20 @@ function autoScroll() {
   if (!el) return;
   const sr = scriptEl.getBoundingClientRect(), r = el.getBoundingClientRect();
   const lineH = settings.textSize * 1.5, top = sr.top + 10, want = top + lineH * settings.linesAbove;
-  const below = r.top - want, roomOut = r.bottom > sr.bottom - lineH * 0.6, aboveTop = r.top < top - 2;
+  // Keep two lines below the one you're reading in view when there's room, so you never wait for the next line.
+  // This uses the live spot (the settled one can be half a second behind after a move to a new paragraph).
+  const ahead = sr.height >= lineH * (settings.linesAbove + 4) ? 2.2 : 0.6;
+  let liveBottom = r.bottom, liveTop = r.top;
+  if (listening && !(tts && tts.cur >= 0)) {
+    const le = tokEls[model.units[Math.min(shown.pos, model.N - 1)].ti];
+    // (only a step onto the next line or two counts: a bigger jump waits until it has settled)
+    if (le && le !== el) { const lr = le.getBoundingClientRect(); if (lr.bottom > liveBottom && lr.top - r.top <= lineH * 3.6) { liveBottom = lr.bottom; liveTop = lr.top; } }
+  }
+  const below = r.top - want, roomOut = liveBottom > sr.bottom - lineH * ahead, aboveTop = r.top < top - 2;
   if (now < userScrollUntil) { if (aboveTop || r.top > sr.bottom) $('#backPill').hidden = false; return; }
   $('#backPill').hidden = true;
-  if (aboveTop) { if (!anim) smoothScrollTo(scriptEl.scrollTop + (r.top - want), 450); return; }
+  if (aboveTop) { if (!anim) smoothScrollTo(scriptEl.scrollTop + (r.top - want), 450); flow.v = 0; return; }
+  if (settings.scrollStyle === 'flow') { flowScroll(dt, sr, lineH, want); return; }
   const slow = settings.scrollStyle === 'slow';
   // Scroll every N sentences: when you reach the Nth new sentence, its first line moves to the reading position,
   // which keeps the sentence you're reading (and the next, if there's room) in view. A sentence too long to fit
@@ -474,8 +521,11 @@ function autoScroll() {
       move = Math.min(below, (sEl ? sEl.getBoundingClientRect().top : r.top) - want);
     }
     due = move > (slow ? 1 : lineH * 0.5);
-    if (roomOut) { move = below; due = true; }
-  } else due = slow ? below > 1 : (below >= lineH * (settings.scrollEvery - 0.5) || roomOut);
+    if (roomOut) { move = Math.max(below, liveTop - want); due = true; }
+  } else {
+    due = slow ? below > 1 : (below >= lineH * (settings.scrollEvery - 0.5) || roomOut);
+    if (roomOut) move = Math.max(below, liveTop - want);
+  }
   if (slow) {
     if (!due || anim) { slowAcc = 0; return; }
     if (move > lineH * 5) { slowAcc = 0; smoothScrollTo(scriptEl.scrollTop + move, 350); return; } // far away: go there
@@ -494,6 +544,49 @@ function autoScroll() {
   if (anim || !due) return;
   if (settings.scrollStyle === 'pause' && !roomOut && now - lastWord < 450) return;
   smoothScrollTo(scriptEl.scrollTop + move, settings.scrollStyle === 'pause' ? 450 : 300);
+}
+
+// Continuous scrolling (Settings → Scroll style → Continuous), for long flowing reads like audiobooks: the point
+// you've reached stays at the reading position and the page moves up steadily at your pace, a little at a time as
+// you go across each line, so the next lines keep coming without steps or waits. Between the recognizer's updates
+// the point moves on at your recent pace; it never steps back for a word or two (the recognizer revising itself),
+// only for a real jump back such as a pickup.
+const flow = { v: 0, acc: 0 };
+function flowScroll(dt, sr, lineH, want) {
+  const nowS = performance.now() / 1000;
+  let p;
+  if (tts && tts.cur >= 0) { const r = tts.tracker.rate(); p = model.tokens[tts.cur].u0 + (r.rate > 0 ? Math.min(1.2, r.rate * Math.max(0, nowS - r.lastT)) : 0); }
+  else {
+    // where you are now: the last word heard, plus what you've said since at your pace (syllables per second),
+    // including the recognizer's usual delay; when you pause it comes back to the last word heard
+    const r = follower.rate(), since = nowS - r.lastT;
+    p = shown.pos;
+    if (r.rate > 0 && since < 0.9) {
+      const lag = LAG[settings.engine] || 0.4;
+      p = follower.sylRate() ? Math.min(shown.pos + 3, follower.aheadOf(shown.pos, Math.min(1.2, lag + since))) : p + Math.min(1.5, r.rate * since);
+    }
+  }
+  p = Math.max(0, Math.min(p, model.N - 0.001));
+  const u = Math.floor(p), f = p - u, el = tokEls[model.units[u].ti];
+  if (!el) return;
+  const r = el.getBoundingClientRect(), pr = el.parentElement.getBoundingClientRect();
+  const x0 = pr.left + 15, x1 = Math.max(x0 + 1, pr.right);
+  const across = Math.max(0, Math.min(1, (r.left + r.width * f - x0) / (x1 - x0)));
+  const delta = r.top + across * lineH - want;
+  if (delta > sr.height * 0.8 || delta < -sr.height * 0.8) { flow.v = 0; flow.acc = 0; if (!anim) smoothScrollTo(scriptEl.scrollTop + (r.top - want), 350); return; }
+  if (anim) return;
+  // speed that closes the gap in about half a second, itself eased so the motion stays even
+  const target = delta >= 0 ? delta / 0.55 : delta < -lineH * 2 ? delta / 0.5 : 0;
+  flow.v += (target - flow.v) * Math.min(1, dt / 0.3);
+  if (Math.abs(flow.v) < 0.5) { flow.v = 0; return; }
+  flow.acc += flow.v * dt;
+  const px = slowPx || 1 / Math.max(1, window.devicePixelRatio || 1);
+  if (Math.abs(flow.acc) >= px) {
+    const step = Math.trunc(flow.acc / px) * px, before = scriptEl.scrollTop;
+    flow.acc -= step;
+    scriptEl.scrollTop = before + step;
+    if (!slowPx && scriptEl.scrollTop === before && Math.abs(step) < 1) slowPx = 1;
+  }
 }
 
 // ---------- following ----------
@@ -555,7 +648,7 @@ function updateOffChip() {
 let startGen = 0;
 async function startListening() {
   if (listening || micBusy) return;
-  if (!model || !model.N) { toast('Open a script first.'); return; }
+  if (!model || !model.N) { toast('Open a project first.'); return; }
   if (mode !== 'read') setMode('read');
   if (sound) { resumeAfterSound = false; setSound(false); }
   stopTTS();
@@ -626,78 +719,16 @@ function stopListening() {
 }
 
 // ---------- video ----------
-// Some browsers (Edge on Android) stall playing a stored video through a blob: link: the size loads, the picture
-// never does. Then the app switches to serving it like a website video from the app's offline helper, and
-// remembers that for this device. Ways to play, in order: 'blob' (default), 'sw' (served), 'memory' (last resort).
-let videoBlob = null, videoMode = 'blob', vStallTimer = null;
-// Full pictures far apart: jumping in the video can freeze on some phones (seen on Pixels with Chrome-based browsers;
-// a Zoom recording with one every 30 s froze, the same video with one every second played fine).
-let videoKf = null;
-const KF_WARN = 8;
-async function checkKeyframes(blob) {
-  videoKf = null;
-  const r = await keyframeGap(blob);
-  if (videoBlob !== blob) return;
-  videoKf = r;
-  dbg('video', r ? `full picture at most every ${r.maxGap.toFixed(1)} s` : 'couldn’t read how often it has a full picture');
-  renderFiles();
-  const phone = /Android|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 0 && Math.min(screen.width, screen.height) < 900);
-  let warned = [];
-  try { warned = JSON.parse(localStorage.getItem('vo-prompter-kf-warned') || '[]'); } catch (e) { /* ignore */ }
-  const key = project ? project.id : '';
-  if (r && r.maxGap > KF_WARN && phone && !warned.includes(key)) {
-    try { localStorage.setItem('vo-prompter-kf-warned', JSON.stringify([...warned, key].slice(-50))); } catch (e) { /* ignore */ }
-    toast(`This video has a full picture only every ${Math.round(r.maxGap)} s. On some phones that makes jumping in it freeze. If it does, see Files.`, 9000);
-  }
-}
-function setVideoSrc(blob, how) {
-  if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
-  if (!how && blob !== videoBlob) { videoBlob = blob; checkKeyframes(blob); }
-  videoBlob = blob;
-  const canServe = !!(navigator.serviceWorker && navigator.serviceWorker.controller && project && project.videoName);
-  videoMode = how || (settings.videoMode === 'sw' && canServe ? 'sw' : 'blob');
-  if (videoMode === 'sw') videoURL = 'local-video/' + encodeURIComponent(project.id) + '?v=' + Date.now();
-  else videoURL = URL.createObjectURL(blob);
-  dbg('video', 'playing from ' + videoMode);
+function setVideoSrc(blob) {
+  if (videoURL) URL.revokeObjectURL(videoURL);
+  videoURL = URL.createObjectURL(blob);
   video.src = videoURL;
   video.muted = !sound;
   document.body.classList.remove('no-video');
   layout();
-  armVideoStall();
 }
-async function loadVideoIntoMemory(at) {
-  const src = videoBlob;
-  if (!src || src.size >= 600e6) return;
-  dbg('video', `reading the video into memory (${Math.round(src.size / 1e6)} MB)`);
-  try {
-    const mem = new Blob([await src.arrayBuffer()], { type: src.type || 'video/mp4' });
-    if (videoBlob !== src) return;
-    setVideoSrc(mem, 'memory');
-    if (at > 0) seekVideo(at, 'resume');
-  } catch (e) { noteError('video into memory: ' + e.message); dbg('video', 'into memory failed: ' + e.message); }
-}
-function armVideoStall() {
-  clearTimeout(vStallTimer);
-  if (!hasVideo() || videoMode === 'memory') return;
-  vStallTimer = setTimeout(() => {
-    if (!hasVideo() || video.readyState >= 2) return;
-    const at = video.currentTime;
-    if (videoMode === 'blob' && navigator.serviceWorker && navigator.serviceWorker.controller && project && project.videoName) {
-      dbg('video', 'no picture data after 8 s: serving it like a website video');
-      settings.videoMode = 'sw'; saveSettings();
-      setVideoSrc(videoBlob, 'sw');
-      if (at > 0) seekVideo(at, 'resume');
-    } else {
-      dbg('video', 'no picture data after 8 s: playing from memory');
-      loadVideoIntoMemory(at);
-    }
-  }, 8000);
-}
-video.addEventListener('seeking', armVideoStall);
-video.addEventListener('stalled', armVideoStall);
 function clearVideo() {
-  clearTimeout(vStallTimer); videoBlob = null; videoMode = 'blob'; pendingSeek = null;
-  if (videoURL && videoURL.startsWith('blob:')) URL.revokeObjectURL(videoURL);
+  if (videoURL) URL.revokeObjectURL(videoURL);
   videoURL = null;
   video.removeAttribute('src'); video.load();
   document.body.classList.add('no-video');
@@ -734,31 +765,11 @@ video.addEventListener('pause', () => { renderPlay(); wantAwake(); });
 function updateVTime() { $('#vTime').textContent = `${fmtTime(video.currentTime)} / ${fmtTime(video.duration)}`; }
 function renderPlay() { const playing = !video.paused; $('#icoPlay').toggleAttribute('hidden', playing); $('#icoPause').toggleAttribute('hidden', !playing); $('#vPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
 
-// All jumps in the video go through here. Phones with Chrome-based browsers (seen on Pixels) get stuck for good, and
-// keep the video decoder stuck for a while, when a video is jumped far before its first picture is ready, or jumped
-// again while a jump is still going. So a jump waits for the first picture, and jumps made meanwhile collapse into
-// the last one.
-let pendingSeek = null;
-function seekVideo(t, why) {
-  if (!hasVideo() || !(t >= 0)) return;
-  vRate = 0;
-  if (video.readyState < 2 || video.seeking) {
-    if (pendingSeek === null) dbg('video', `${why} jump to ${t.toFixed(1)} s waits (${video.seeking ? 'still jumping' : 'no picture yet'})`);
-    pendingSeek = t;
-    return;
-  }
-  pendingSeek = null;
-  dbg('video', `${why} jump ${video.currentTime.toFixed(1)} → ${t.toFixed(1)} s`);
-  video.currentTime = t;
-}
-function flushSeek() { if (pendingSeek !== null && video.readyState >= 2 && !video.seeking) { const t = pendingSeek; pendingSeek = null; seekVideo(t, 'waiting'); } }
-video.addEventListener('loadeddata', flushSeek);
-video.addEventListener('canplay', flushSeek);
-video.addEventListener('seeked', flushSeek);
 function seekVideoToPos() {
   if (!hasVideo() || !model || !model.times || video.readyState < 1) return;
   const p = tts && tts.cur >= 0 ? model.tokens[tts.cur].u0 : follower.pos;
-  seekVideo(timeAt(model.times, p), 'reading spot');
+  video.currentTime = timeAt(model.times, p);
+  vRate = 0;
 }
 
 function setFollow(on) {
@@ -833,6 +844,7 @@ function tick() {
   }
   updateShown();
   updateStable();
+  if (snapFrames && --snapFrames === 0) docEl.classList.remove('snap');
   paint();
   updateOffChip();
   autoScroll();
@@ -847,7 +859,7 @@ function tick() {
   const target = timeAt(model.times, p);
   const err = target - video.currentTime;
   // phones' video decoders can't keep up much past ×4 (the picture goes black), so a big gap is a jump instead
-  if (err > 12 || err < -4) { if (!video.seeking && pendingSeek === null) seekVideo(target, 'follow'); return; }
+  if (err > 12 || err < -4) { video.currentTime = target; vRate = 0; return; }
   const slope = timeAt(model.times, p + 1) - timeAt(model.times, p);
   const desired = slope * d.rate + err / 1.2;
   vRate += (desired - vRate) * Math.min(1, dt / 0.35);
@@ -871,8 +883,8 @@ $('#vPlay').onclick = () => {
   if (video.paused) { setFollow(false); video.playbackRate = 1; video.play().catch(() => {}); }
   else { setFollow(false); video.pause(); }
 };
-$('#vBack').onclick = () => { if (!hasVideo()) return; setFollow(false); seekVideo(Math.max(0, video.currentTime - 5), 'back 5'); };
-$('#vFwd').onclick = () => { if (!hasVideo()) return; setFollow(false); seekVideo(Math.min(video.duration || 0, video.currentTime + 5), 'ahead 5'); };
+$('#vBack').onclick = () => { if (!hasVideo()) return; setFollow(false); video.currentTime = Math.max(0, video.currentTime - 5); };
+$('#vFwd').onclick = () => { if (!hasVideo()) return; setFollow(false); video.currentTime = Math.min(video.duration || 0, video.currentTime + 5); };
 $('#vFollow').onclick = () => { if (follow) setFollow(false); else { video.pause(); setFollow(true); } };
 $('#vSound').onclick = () => setSound(!sound);
 
@@ -881,7 +893,30 @@ $('#vSound').onclick = () => setSound(!sound);
 // it's moved up (so text is never behind or under the video). Landscape: the video is on the right; the bar sets its width.
 const mainEl = $('#main'), sideEl = $('#side'), paneEl = $('#videoPane');
 const GRIP = 18;
-const isLand = () => window.innerWidth > window.innerHeight;
+const isLand = () => effectiveView() === 'desktop' || window.innerWidth > window.innerHeight;
+// Settings → Screen → Layout. Automatic goes by the device: phones and tablets by screen size (touch screens),
+// computers by a mouse or trackpad. Phone: compact bars. Tablet: full-size bars. Desktop: script and video side by
+// side with full-size bars, even in a narrow or installed app window. Phone and tablet put the video under the
+// script when the screen is upright and beside it when it's sideways.
+const DEVICE = (() => {
+  const touch = matchMedia('(hover: none) and (pointer: coarse)').matches;
+  if (!touch) return 'desktop';
+  return Math.min(screen.width, screen.height) < 600 ? 'phone' : 'tablet';
+})();
+const effectiveView = () => (settings.view && settings.view !== 'auto' ? settings.view : DEVICE);
+function applyView() {
+  const v = effectiveView(), w = window.innerWidth;
+  const compact = settings.view === 'phone' || (!settings.view || settings.view === 'auto') && w < (DEVICE === 'desktop' ? 600 : 720);
+  const b = document.body;
+  b.classList.toggle('compact', compact);
+  b.classList.toggle('view-desktop', v === 'desktop');
+  const m = document.querySelector('meta[name=viewport]');
+  const want = v === 'desktop' && Math.min(screen.width, screen.height) < 900 ? 'width=1280' : 'width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content';
+  if (m && m.content !== want) m.content = want;
+  const rs = document.documentElement.style;
+  rs.setProperty('--zu', String((settings.uiScale || 100) / 100));
+  rs.setProperty('--ut', String((settings.uiText || 100) / 100));
+}
 function layout() {
   const land = isLand();
   mainEl.classList.toggle('land', land);
@@ -889,17 +924,18 @@ function layout() {
   if (!hasVideo()) { scriptEl.style.flex = ''; sideEl.style.width = ''; paneEl.style.height = ''; return; }
   const ar = video.videoWidth && video.videoHeight ? video.videoHeight / video.videoWidth : 9 / 16;
   const W = mainEl.clientWidth, H = mainEl.clientHeight;
+  const ctlH = () => $('.vctl').getBoundingClientRect().height || 60; // its real height, interface size included
   if (land) {
     scriptEl.style.flex = '';
     let w = settings.sideFrac ? settings.sideFrac * W : W * 0.45;
     w = Math.round(Math.max(260, Math.min(W - GRIP - 280, w)));
     sideEl.style.width = w + 'px';
-    const ctl = $('.vctl').offsetHeight || 60;
+    const ctl = ctlH();
     paneEl.style.height = Math.round(Math.min(w * ar, H - ctl) + ctl) + 'px';
   } else {
     sideEl.style.width = '';
     paneEl.style.height = 'auto';
-    const ctl = $('.vctl').offsetHeight || 60;
+    const ctl = ctlH();
     const natural = W * ar + ctl;
     let T = settings.textFrac != null ? settings.textFrac * H : H - GRIP - natural;
     T = Math.round(Math.max(Math.min(90, H * 0.3), Math.min(H - GRIP - 140, T)));
@@ -908,7 +944,10 @@ function layout() {
   }
 }
 let layoutTimer = null;
-window.addEventListener('resize', () => { layout(); clearTimeout(layoutTimer); layoutTimer = setTimeout(() => scrollToCurrent(true), 200); });
+window.addEventListener('resize', () => {
+  applyView(); layout(); clearTimeout(layoutTimer);
+  layoutTimer = setTimeout(() => { estimateParas(); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); }, 200);
+});
 (() => {
   const grip = $('#grip');
   let drag = null, lastTap = 0;
@@ -1109,19 +1148,27 @@ function rebuild() {
 }
 
 // ---------- projects ----------
+// A project is one script with everything that goes with it: the video, your voice-over recordings, highlights,
+// bookmarks, read marks and the reading spot. Switching saves the one you're leaving first.
 async function saveProject() {
   if (!project || !model) return;
+  clearTimeout(saveTimer);
   const snap = snapshot();
   project.status = snap.st;
   project.statusText = snap.txt;
   project.pos = snap.pos;
+  project.progress = model.N ? Math.min(1, follower.pos / model.N) : 0;
   project.updated = Date.now();
   try { await store.putProject(project); } catch (e) { /* storage full */ }
 }
 
 async function loadProject(p) {
   stopListening(); stopTTS(); resumeWanted = false;
+  if (project && project.id !== p.id) await saveProject();
+  clearTimeout(saveTimer);
+  closeFindIfOpen(); if (hlOn) closeHl();
   project = p;
+  project.opened = Date.now();
   settings.lastProject = p.id; saveSettings();
   model = buildModel(p.paras.map((x) => ({ ...x })), NaN);
   const r = restore(model, { st: p.status || {}, txt: p.statusText, pos: p.pos });
@@ -1129,71 +1176,196 @@ async function loadProject(p) {
   $('#title').textContent = p.name;
   document.title = p.name + ' · VO Prompter';
   if (!Array.isArray(p.hl)) p.hl = [];
+  if (!Array.isArray(p.bm)) p.bm = [];
   renderDoc();
   loadVo();
   clearVideo();
   if (p.videoName) {
     try { const v = await store.getVideo(p.id); if (v && v.blob) setVideoSrc(v.blob); } catch (e) { /* missing */ }
-    if (!hasVideo()) toast('The video for this script isn’t on this device anymore. Add it again in Files.');
+    if (!hasVideo()) toast('The video for this project isn’t on this device anymore. Add it again in Files.');
   }
-  requestAnimationFrame(() => scrollToCurrent(true));
+  requestAnimationFrame(() => { syncStable(); settleScroll(currentEl()); });
+  try { await store.putProject(project); } catch (e) { /* storage full */ }
+}
+async function switchProject(id) {
+  if (project && project.id === id) return;
+  const p = await store.getProject(id);
+  if (p) await loadProject(p);
 }
 
-async function openScriptFile(file) {
+const baseName = (n) => (n || '').replace(/\.[^.]+$/, '');
+async function readScript(file) {
   let paras;
-  try { paras = await fileToParagraphs(file); } catch (e) { toast('Couldn’t read that file: ' + (e.message || e), 5000); return; }
-  if (!paras.length) { toast('No text found in that file.'); return; }
+  try { paras = await fileToParagraphs(file); } catch (e) { toast('Couldn’t read that file: ' + (e.message || e), 6000); return null; }
+  if (!paras.length) { toast('No text found in that file.'); return null; }
+  return paras;
+}
+// Opening a file whose name matches a project asks first, so a newer version of a script doesn't turn into a
+// second project without its video, voice-over, highlights and bookmarks.
+async function openScriptFile(file) {
+  let same = null;
+  try { same = (await store.listProjects()).find((x) => x.fileName === file.name || x.name === baseName(file.name)); } catch (e) { /* no storage */ }
+  if (same) {
+    chooseDo('You already have this project', `“${same.name}” came from a file with this name. Update it with this file (keeps its video, voice-over, highlights, bookmarks and reading spot where the text still matches), open it as it is, or start a separate project?`, [
+      { label: 'Update it with this file', cls: 'primary', fn: async () => { await switchProject(same.id); await updateScript(file); } },
+      { label: 'Open it as it is', fn: () => switchProject(same.id) },
+      { label: 'New separate project', fn: () => newProject(file) },
+    ]);
+    return;
+  }
+  await newProject(file);
+}
+async function newProject(file) {
+  const paras = await readScript(file);
+  if (!paras) return;
   const id = 's' + Date.now().toString(36);
   const p = {
-    id, name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name,
-    paras: paras.map((text, i) => ({ id: 'a' + i, text })), orig: {}, pos: null, status: {}, videoName: null, updated: Date.now(),
+    id, name: baseName(file.name), fileName: file.name,
+    paras: paras.map((text, i) => ({ id: 'a' + i, text })), orig: {}, pos: null, status: {}, videoName: null, updated: Date.now(), hl: [], bm: [],
   };
   p.paras.forEach((x) => { p.orig[x.id] = x.text; });
-  try { await store.putProject(p); } catch (e) { toast('Couldn’t save the script on this device; it will work until you close the app.'); }
+  try { await store.putProject(p); } catch (e) { toast('Couldn’t save the project on this device; it will work until you close the app.'); }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   await loadProject(p);
   const m = model;
   toast(`${m.N} words to read${m.anchors.length ? `, ${m.anchors.length} video timestamps` : ''}.`);
 }
 
+// Update this project's script from a newer file. Paragraphs are matched to the old ones (same text first, then
+// similar text in the same place), and matched ones keep their highlights, bookmarks and read marks; the video and
+// your voice-over stay and are lined up with the new text. The file's text replaces edits made in the app.
+function wordSet(t) { return new Set(t.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean)); }
+function similar(a, b) {
+  const A = wordSet(a), B = wordSet(b);
+  if (!A.size || !B.size) return 0;
+  let n = 0; for (const w of A) if (B.has(w)) n++;
+  return (2 * n) / (A.size + B.size);
+}
+function matchParagraphs(oldP, newT) {
+  const n = oldP.length, m = newT.length;
+  const ids = new Array(m).fill(null);
+  if (n * m <= 25e6) {
+    // longest run of identical paragraphs in order (LCS)
+    const W = m + 1, L = new Uint16Array((n + 1) * W);
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+      L[i * W + j] = oldP[i].text === newT[j] ? L[(i + 1) * W + j + 1] + 1 : Math.max(L[(i + 1) * W + j], L[i * W + j + 1]);
+    }
+    const pairs = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (oldP[i].text === newT[j]) { pairs.push([i, j]); i++; j++; }
+      else if (L[(i + 1) * W + j] >= L[i * W + j + 1]) i++; else j++;
+    }
+    pairs.push([n, m]);
+    // between matches, pair changed paragraphs in order when they're still similar
+    let pi = 0, pj = 0;
+    for (const [mi, mj] of pairs) {
+      let a = pi, b = pj;
+      while (a < mi && b < mj) {
+        if (similar(oldP[a].text, newT[b]) >= 0.5) { ids[b] = oldP[a].id; a++; b++; }
+        else if (b + 1 < mj && similar(oldP[a].text, newT[b + 1]) >= 0.5) b++;
+        else a++;
+      }
+      if (mi < n) ids[mj] = oldP[mi].id;
+      pi = mi + 1; pj = mj + 1;
+    }
+  } else {
+    const byText = new Map();
+    oldP.forEach((x) => { if (!byText.has(x.text)) byText.set(x.text, []); byText.get(x.text).push(x.id); });
+    newT.forEach((t, j) => { const q = byText.get(t); if (q && q.length) ids[j] = q.shift(); });
+  }
+  return ids;
+}
+async function updateScript(file) {
+  if (!project) { await newProject(file); return; }
+  const paras = await readScript(file);
+  if (!paras) return;
+  stopListening(); stopTTS();
+  await saveProject();
+  const ids = matchParagraphs(project.paras, paras);
+  const used = new Set();
+  const np = paras.map((text, j) => { let id = ids[j]; if (!id || used.has(id)) id = newId(); used.add(id); return { id, text }; });
+  const oldText = new Map(project.paras.map((x) => [x.id, x.text]));
+  const same = np.filter((x) => oldText.get(x.id) === x.text).length, changed = np.filter((x) => oldText.has(x.id) && oldText.get(x.id) !== x.text).length;
+  project.paras = np;
+  project.orig = Object.fromEntries(np.map((x) => [x.id, x.text]));
+  project.fileName = file.name;
+  project.hl = (project.hl || []).filter((h) => used.has(h.pid));
+  project.bm = (project.bm || []).filter((m) => used.has(m.pid));
+  if (project.pos && !used.has(project.pos.pid)) project.pos = null;
+  await loadProject(project);
+  toast(`Script updated: ${same} paragraphs unchanged, ${changed} changed, ${np.length - same - changed} new. Video, voice-over, highlights and bookmarks kept where the text matches.`, 7000);
+}
+
 async function openVideoFile(file) {
-  if (!project) { toast('Open a script first.'); return; }
+  if (!project) { toast('Open a project first.'); return; }
+  setVideoSrc(file);
   project.videoName = file.name;
   saveProject();
   try { await store.putVideo(project.id, file); }
-  catch (e) { project.videoName = null; toast('Couldn’t keep the video on this device; you’ll need to add it again next time.', 5000); }
-  setVideoSrc(file);
-  if (!project.videoName) { project.videoName = file.name; saveProject(); }
+  catch (e) { toast('Couldn’t keep the video on this device; you’ll need to add it again next time.', 5000); }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   renderFiles();
 }
 
 async function fillProjectList(el) {
   if (!el) return;
-  let list = [];
-  try { list = await store.listProjects(); } catch (e) { /* no storage */ }
+  let list = [], vo = new Map();
+  try { list = await store.listProjects(); vo = await store.voCounts(); } catch (e) { /* no storage */ }
   el.textContent = '';
   if (!list.length) { if (el.id === 'projList') el.innerHTML = '<p class="note">None yet.</p>'; return; }
   for (const it of list) {
+    const cur = !!(project && project.id === it.id);
     const row = document.createElement('div');
-    row.className = 'proj-item' + (project && project.id === it.id ? ' current' : '');
+    row.className = 'proj-item' + (cur ? ' current' : '');
     const t = document.createElement('div'); t.className = 't';
-    t.textContent = it.name;
-    const sm = document.createElement('small'); sm.textContent = new Date(it.updated).toLocaleString() + (it.hasVideo ? ' · with video' : '');
+    const nm = document.createElement('span'); nm.textContent = it.name; t.appendChild(nm);
+    const bits = [];
+    if (it.progress != null) bits.push(Math.round(it.progress * 100) + '% read');
+    if (it.hasVideo) bits.push('video');
+    if (vo.get(it.id)) bits.push(vo.get(it.id) === 1 ? 'voice-over' : vo.get(it.id) + ' voice-over recordings');
+    if (it.bm) bits.push(it.bm + (it.bm === 1 ? ' bookmark' : ' bookmarks'));
+    if (it.hl) bits.push(it.hl + (it.hl === 1 ? ' highlight' : ' highlights'));
+    const sm = document.createElement('small'); sm.textContent = 'Opened ' + new Date(it.opened).toLocaleString() + (bits.length ? ' · ' + bits.join(' · ') : '');
     t.appendChild(sm);
-    const open = document.createElement('button'); open.className = 'btn'; open.textContent = project && project.id === it.id ? 'Open now' : 'Open';
-    open.disabled = !!(project && project.id === it.id);
-    open.onclick = async () => { const p = await store.getProject(it.id); if (p) { $('#dlgFiles').close(); loadProject(p); } };
+    const acts = document.createElement('div'); acts.className = 'acts';
+    const open = document.createElement('button'); open.className = 'btn' + (cur ? '' : ' primary'); open.textContent = cur ? 'Open now' : 'Open';
+    open.disabled = cur;
+    open.onclick = async () => { for (const d of ['#dlgProjects', '#dlgFiles']) if ($(d).open) $(d).close(); await switchProject(it.id); };
+    const ren = document.createElement('button'); ren.className = 'btn'; ren.textContent = 'Rename';
+    ren.onclick = () => {
+      const inp = document.createElement('input'); inp.value = it.name; inp.setAttribute('aria-label', 'Project name');
+      nm.replaceWith(inp); inp.focus(); inp.select();
+      let done = false;
+      const finish = async (save) => {
+        if (done) return; done = true;
+        const v = inp.value.trim();
+        if (save && v && v !== it.name) {
+          if (cur) { project.name = v; $('#title').textContent = v; document.title = v + ' · VO Prompter'; await saveProject(); }
+          else { const p = await store.getProject(it.id); if (p) { p.name = v; await store.putProject(p); } }
+        }
+        fillProjectList(el);
+      };
+      inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+      inp.onblur = () => finish(true);
+    };
     const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
-    del.onclick = () => confirmDo('Delete this script?', `“${it.name}”, its edits and its video will be removed from this device.`, 'Delete', async () => {
+    del.onclick = () => confirmDo('Delete this project?', `“${it.name}”: its script, edits, video, voice-over, highlights and bookmarks will be removed from this device. Your files elsewhere aren’t touched.`, 'Delete', async () => {
       await store.deleteProject(it.id);
-      if (project && project.id === it.id) { stopListening(); stopTTS(); project = null; model = null; clearVideo(); $('#title').textContent = 'No script open'; renderDoc(); }
+      if (cur) { stopListening(); stopTTS(); project = null; model = null; clearVideo(); revokeVo(); $('#title').textContent = 'No project open'; document.title = 'VO Prompter'; settings.lastProject = null; saveSettings(); renderDoc(); }
       fillProjectList(el);
     });
-    row.append(t, open, del);
+    acts.append(open, ren, del);
+    row.append(t, acts);
     el.appendChild(row);
   }
 }
+function openProjects() { pauseMic('dialog'); fillProjectList($('#projList')); $('#pUpdate').disabled = !project; $('#dlgProjects').showModal(); }
+$('#btnProject').onclick = openProjects;
+$('#fProjects').onclick = () => { $('#dlgFiles').close(); openProjects(); };
+$('#pNew').onclick = () => $('#fileScript').click();
+$('#pUpdate').onclick = () => $('#fileUpdate').click();
+$('#fileUpdate').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { if ($('#dlgProjects').open) $('#dlgProjects').close(); updateScript(f); } };
 
 function download(name, data, type) {
   const blob = new Blob([data], { type });
@@ -1214,7 +1386,8 @@ function setMode(m) {
   for (const [id, v] of [['#mRead', 'read'], ['#mListen', 'listen'], ['#mEdit', 'edit']]) $(id).setAttribute('aria-pressed', v === m ? 'true' : 'false');
   docEl.classList.toggle('mode-edit', m === 'edit');
   renderMic();
-  if (wasEdit) renderDoc(); else updateClasses();
+  if (wasEdit) addEndButton(m === 'edit'); // edits rebuild the page when they're committed, so nothing else to redo
+  updateClasses();
   if (m === 'listen') toast('Tap a sentence to hear it.', 2200);
   if (m === 'edit') toast('Tap a paragraph to edit it.', 2200);
 }
@@ -1233,7 +1406,7 @@ docEl.addEventListener('click', (e) => {
     const t = +stamp.dataset.time;
     const pb = model.blocks.find((b) => b.pid === para.dataset.pid);
     if (pb && pb.u1 > pb.u0) follower.jumpTo(pb.u0, false);
-    seekVideo(t, 'timestamp');
+    video.currentTime = t; vRate = 0;
     return;
   }
   if (!w) return;
@@ -1244,7 +1417,7 @@ docEl.addEventListener('click', (e) => {
   // read mode: jump the reading spot and the video
   const wasPlaying = hasVideo() && !video.paused && !follow;
   follower.jumpTo(tok.u0, true);
-  if (hasVideo() && model.times) { seekVideo(timeAt(model.times, tok.u0), 'tap'); if (wasPlaying) video.play().catch(() => {}); }
+  if (hasVideo() && model.times) { video.currentTime = timeAt(model.times, tok.u0); vRate = 0; if (wasPlaying) video.play().catch(() => {}); }
   userScrollUntil = 0;
   scrollToCurrent(true);
 });
@@ -1288,7 +1461,7 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('blur', () => pauseMic('blur'));
 window.addEventListener('focus', () => resumeMic('blur'));
-for (const id of ['#dlgSettings', '#dlgFiles']) $(id).addEventListener('close', () => resumeMic('dialog'));
+for (const id of ['#dlgSettings', '#dlgFiles', '#dlgToc', '#dlgProjects']) $(id).addEventListener('close', () => resumeMic('dialog'));
 
 // ---------- dialogs ----------
 for (const d of document.querySelectorAll('dialog')) {
@@ -1303,6 +1476,17 @@ let confirmFn = null;
 function confirmDo(title, text, yes, fn) {
   $('#cTitle').textContent = title; $('#cText').textContent = text; $('#cYes').textContent = yes;
   confirmFn = fn; $('#dlgConfirm').showModal();
+}
+// A question with a few answers (plus Cancel).
+function chooseDo(title, text, opts) {
+  $('#chTitle').textContent = title; $('#chText').textContent = text;
+  const box = $('#chBtns'); box.textContent = '';
+  for (const o of [...opts, { label: 'Cancel' }]) {
+    const b = document.createElement('button'); b.className = 'btn' + (o.cls ? ' ' + o.cls : ''); b.textContent = o.label;
+    b.onclick = async () => { $('#dlgChoice').close(); if (o.fn) await o.fn(); };
+    box.appendChild(b);
+  }
+  $('#dlgChoice').showModal();
 }
 $('#cYes').onclick = async () => { $('#dlgConfirm').close(); const f = confirmFn; confirmFn = null; if (f) await f(); };
 $('#cNo').onclick = () => { confirmFn = null; $('#dlgConfirm').close(); };
@@ -1363,6 +1547,7 @@ function openFind() {
   $('#findIn').focus(); $('#findIn').select();
   if (findState.q) runFind(findState.q, true);
 }
+function closeFindIfOpen() { if (!$('#findBar').hidden) closeFind(); }
 function closeFind() {
   $('#findBar').hidden = true; layout();
   findState.q = ''; findState.hits = []; findState.cur = -1;
@@ -1437,7 +1622,7 @@ function renderHlBar() {
   $('#hlNote').textContent = settings.hlColor === 'x' ? 'Tap a highlight to remove it.' : hlStart >= 0 ? 'Now tap the last word.' : 'Tap the first word, then the last.';
 }
 function openHl() {
-  if (!model) { toast('Open a script first.'); return; }
+  if (!model) { toast('Open a project first.'); return; }
   if (mode === 'edit') setMode('read');
   if (!$('#findBar').hidden) closeFind();
   hlOn = true; hlStart = -1;
@@ -1454,6 +1639,159 @@ function closeHl() {
 $('#btnHl').onclick = () => (hlOn ? closeHl() : openHl());
 $('#hlDone').onclick = closeHl;
 for (const sw of document.querySelectorAll('#hlBar .sw')) sw.onclick = () => { settings.hlColor = sw.dataset.c; saveSettings(); if (hlStart >= 0 && sw.dataset.c === 'x') { markDirtyTokens(hlStart, hlStart); hlStart = -1; } renderHlBar(); };
+
+// ---------- contents and bookmarks ----------
+// Contents lists, in script order: sections (headings, marker lines like START SESSION 02, and bracketed directions
+// that start with a capital, like [SLIDE: …] or [SYSTEM]), your bookmarks, and your highlights, where highlights
+// that touch count as one entry even across colours, sentences or paragraphs. Tap one to go there.
+// Bookmarks are kept with the project by paragraph and word, like highlights: { id, pid, a, name, added }.
+let tocDirty = true, tocFilter = 'all';
+const bmIndex = (m) => { const b = blockByPid.get(m.pid); return b && b.t1 > b.t0 ? Math.min(b.t1 - 1, b.t0 + Math.max(0, m.a)) : -1; };
+function buildBmTok() {
+  if (!model) return;
+  const old = bmTok;
+  bmTok = new Uint8Array(model.tokens.length);
+  for (const m of (project && project.bm) || []) { const t = bmIndex(m); if (t >= 0) bmTok[t] = 1; }
+  for (let t = 0; t < Math.min(old.length, bmTok.length); t++) if (old[t] !== bmTok[t]) markDirtyTokens(t, t);
+}
+const SECTION_RE = /^([A-Z][A-Z0-9'’&.-]+\b|[A-Z][a-z]+\s*:)/; // [SLIDE …], [SYSTEM], [SESSION 2], [Slide: …]; not [pause]
+const blockText = (b) => b.parts.map((x) => x.text || '').join('').replace(/\s+/g, ' ').trim();
+function wordsOf(t0, t1, max = 9) {
+  const out = [];
+  for (let t = t0; t <= t1 && out.length < max; t++) out.push(model.tokens[t].text);
+  return out.join(' ') + (t1 - t0 + 1 > max ? ' …' : '');
+}
+function tocEntries() {
+  if (!model) return [];
+  const { blocks, tokens } = model, out = [];
+  const T = tokens.length;
+  for (const b of blocks) {
+    if (b.kind === 'heading' || b.kind === 'marker') {
+      out.push({ kind: 'section', u: b.u0, t: -1, el: () => paraEls.get(b.pid), label: blockText(b).replace(/^#+\s*/, '') });
+      continue;
+    }
+    if (b.kind !== 'spoken') continue;
+    let ns = -1;
+    b.parts.forEach((part, i) => {
+      if (part.type !== 'ns') return;
+      ns++;
+      const inner = part.text.replace(/^\[\s*|\s*\]$/g, '');
+      if (!SECTION_RE.test(inner)) return;
+      let ti = -1;
+      for (let j = i + 1; j < b.parts.length; j++) if (b.parts[j].type === 'w') { ti = b.parts[j].ti; break; }
+      const k = ns;
+      out.push({ kind: 'section', u: ti >= 0 ? tokens[ti].u0 : b.u1, t: ti, el: () => { const p = paraEls.get(b.pid); return p ? p.querySelectorAll('.ns')[k] || p : null; }, label: inner });
+    });
+  }
+  for (const m of (project && project.bm) || []) {
+    const t = bmIndex(m);
+    if (t < 0) continue;
+    const s = model.sentences[tokens[t].sent];
+    out.push({ kind: 'bm', u: tokens[t].u0, t, id: m.id, label: m.name || wordsOf(t, s ? s.t1 - 1 : t) });
+  }
+  for (let t = 0; t < T; t++) {
+    if (!hlTok[t]) continue;
+    let z = t;
+    const cols = new Set([hlTok[t]]);
+    while (z + 1 < T && hlTok[z + 1]) { z++; cols.add(hlTok[z]); }
+    out.push({ kind: 'hl', u: tokens[t].u0, t, label: wordsOf(t, z), cols: [...cols].map((c) => HL_KEYS[c]) });
+    t = z;
+  }
+  const order = { section: 0, bm: 1, hl: 2 };
+  out.sort((a, b) => a.u - b.u || order[a.kind] - order[b.kind] || a.t - b.t);
+  return out;
+}
+function renderToc() {
+  const list = $('#tocList');
+  list.textContent = '';
+  for (const b of document.querySelectorAll('#dlgToc .seg button')) b.setAttribute('aria-pressed', b.dataset.f === tocFilter ? 'true' : 'false');
+  if (!model) { list.innerHTML = '<p class="toc-empty">Open a project first.</p>'; return; }
+  const all = tocEntries();
+  const showTime = !!model.times && (model.anchors.length || hasVideo());
+  const pos = Math.min(follower.pos, model.N - 1);
+  let here = -1;
+  all.forEach((e, i) => { if (e.u <= pos) here = i; });
+  const frag = document.createDocumentFragment();
+  let n = 0, hereRow = null;
+  all.forEach((e, i) => {
+    if (tocFilter !== 'all' && e.kind !== tocFilter) return;
+    n++;
+    const row = document.createElement('div');
+    row.className = 'toc-row k-' + e.kind + (i === here ? ' here' : '');
+    const go = document.createElement('button'); go.className = 'toc-go';
+    const ic = document.createElement('span'); ic.className = 'toc-ic';
+    if (e.kind === 'section') ic.textContent = '§';
+    else if (e.kind === 'bm') ic.textContent = '★';
+    else { const sw = document.createElement('span'); sw.className = 'toc-sw'; for (const c of e.cols) { const x = document.createElement('i'); x.className = 'c-' + c; sw.appendChild(x); } ic.appendChild(sw); }
+    const lb = document.createElement('span'); lb.className = 'toc-lb'; lb.textContent = e.label;
+    go.append(ic, lb);
+    if (showTime) { const tm = document.createElement('span'); tm.className = 'toc-tm'; tm.textContent = fmtTime(timeAt(model.times, e.u)); go.appendChild(tm); }
+    go.onclick = () => goToEntry(e);
+    row.appendChild(go);
+    if (e.kind === 'bm') {
+      const ren = document.createElement('button'); ren.className = 'toc-act'; ren.textContent = '✎'; ren.title = 'Rename'; ren.setAttribute('aria-label', 'Rename bookmark');
+      ren.onclick = () => renameBookmark(e.id, row, lb.textContent);
+      const del = document.createElement('button'); del.className = 'toc-act'; del.textContent = '✕'; del.title = 'Remove'; del.setAttribute('aria-label', 'Remove bookmark');
+      del.onclick = () => { project.bm = project.bm.filter((m) => m.id !== e.id); buildBmTok(); saveProject(); renderToc(); };
+      row.append(ren, del);
+    }
+    if (i === here) hereRow = row;
+    frag.appendChild(row);
+  });
+  if (!n) {
+    const p = document.createElement('p'); p.className = 'toc-empty';
+    p.textContent = { all: 'Nothing yet: this script has no sections, and you have no bookmarks or highlights.', section: 'No headings, marker lines or bracketed directions in this script.', bm: 'No bookmarks yet. Bookmark this spot adds one where you are.', hl: 'No highlights yet. Use the highlighter (pen button) to add some.' }[tocFilter];
+    frag.appendChild(p);
+  }
+  list.appendChild(frag);
+  if (hereRow) requestAnimationFrame(() => hereRow.scrollIntoView({ block: 'center' }));
+}
+function renameBookmark(id, row, current) {
+  const m = project.bm.find((x) => x.id === id);
+  if (!m) return;
+  const inp = document.createElement('input');
+  inp.value = m.name || current; inp.setAttribute('aria-label', 'Bookmark name');
+  row.textContent = ''; row.appendChild(inp); inp.focus(); inp.select();
+  let done = false;
+  const finish = (save) => { if (done) return; done = true; if (save) { m.name = inp.value.trim(); saveProject(); } renderToc(); };
+  inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+  inp.onblur = () => finish(true);
+}
+// A bookmark goes on the first word of the sentence you're on.
+function addBookmark() {
+  if (!model || !model.N) return;
+  const u = Math.min(follower.pos, model.N - 1);
+  const s = model.sentences[model.tokens[model.units[u].ti].sent];
+  const t = s ? s.t0 : model.units[u].ti;
+  const pid = model.tokens[t].pid, b = blockByPid.get(pid);
+  if (!Array.isArray(project.bm)) project.bm = [];
+  if (project.bm.some((m) => bmIndex(m) === t)) { toast('This spot is already bookmarked.'); return; }
+  project.bm.push({ id: newId(), pid, a: t - b.t0, name: '', added: Date.now() });
+  buildBmTok(); saveProject();
+  toast('Bookmarked.', 1600);
+  if ($('#dlgToc').open) renderToc();
+}
+// Going to an entry moves the reading spot there (marks you've made stay) and the video with it.
+function goToEntry(e) {
+  $('#dlgToc').close();
+  if (!model || !model.N) return;
+  if (tts) pauseTTS();
+  follower.jumpTo(Math.min(e.u, model.N - 1), false);
+  if (listening) seekVideoToPos();
+  userScrollUntil = 0; syncStable();
+  const el = (typeof e.el === 'function' ? e.el() : null) || (e.t >= 0 ? tokEls[e.t] : null) || currentEl();
+  settleScroll(el);
+}
+// A long jump can land a little off while paragraphs on the way are laid out for the first time, so the spot is
+// put in place once more after the page has caught up.
+function settleScroll(el) {
+  if (!el) return;
+  keepInView(el, true);
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (el.isConnected) keepInView(el, true); }));
+}
+$('#btnToc').onclick = () => { if (!model) { toast('Open a project first.'); return; } pauseMic('dialog'); renderToc(); $('#dlgToc').showModal(); };
+for (const b of document.querySelectorAll('#dlgToc .seg button')) b.onclick = () => { tocFilter = b.dataset.f; renderToc(); };
+$('#tocAddBm').onclick = () => { if (!project) return; addBookmark(); };
 
 // ---------- my voice-over ----------
 function revokeVo() { for (const v of voTakes) URL.revokeObjectURL(v.url); voTakes = []; }
@@ -1565,14 +1903,15 @@ async function renderTakes() {
   el.textContent = '';
   $('#fTakesAll').hidden = !list.length;
   if (!list.length) { el.innerHTML = '<p class="note">None yet. Turn on Settings → Save test recordings, then read as usual; Start shows “Listening · rec” while it records.</p>'; return; }
+  const sizes = [];
   for (const it of list) {
-    let size = 0, type = '';
-    for (const p of it.parts) { const res = await it.c.match(p.r); if (res) { const bl = await res.blob(); size += bl.size; type = type || bl.type; } }
+    let type = '';
     const row = document.createElement('div'); row.className = 'proj-item';
     const t = document.createElement('div'); t.className = 't';
     const m = it.base.match(/(\d{4})-(\d\d)-(\d\d)_(\d\d)(\d\d)(\d\d)/);
     t.textContent = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).toLocaleString() : it.base;
-    const sm = document.createElement('small'); sm.textContent = (size / 1048576).toFixed(1) + ' MB'; t.appendChild(sm);
+    const sm = document.createElement('small'); sm.textContent = takeSize.has(it.base + it.parts.length) ? (takeSize.get(it.base + it.parts.length) / 1048576).toFixed(1) + ' MB' : '…'; t.appendChild(sm);
+    sizes.push([it, sm]);
     const save = document.createElement('button'); save.className = 'btn'; save.textContent = 'Save';
     save.onclick = async () => {
       save.disabled = true; save.textContent = 'Saving…';
@@ -1580,7 +1919,7 @@ async function renderTakes() {
         const blobs = [];
         for (const p of it.parts) blobs.push(await (await it.c.match(p.r)).blob());
         const audio = new Uint8Array(await new Blob(blobs).arrayBuffer());
-        const files = [{ name: it.base + '.' + takeExt(type), data: audio }];
+        const files = [{ name: it.base + '.' + takeExt((blobs[0] && blobs[0].type) || type), data: audio }];
         const jr = it.log && await it.c.match(it.log);
         if (jr) files.push({ name: it.base + '.json', data: await jr.text() });
         download(it.base + '.zip', writeZip(files), 'application/zip');
@@ -1592,7 +1931,18 @@ async function renderTakes() {
     row.append(t, save, del);
     el.appendChild(row);
   }
+  // sizes are added afterwards (a long take has hundreds of pieces), so the list shows at once
+  for (const [it, sm] of sizes) {
+    const key = it.base + it.parts.length;
+    if (!takeSize.has(key)) {
+      let size = 0;
+      for (const p of it.parts) { const res = await it.c.match(p.r); if (res) size += (await res.blob()).size; }
+      takeSize.set(key, size);
+    }
+    sm.textContent = (takeSize.get(key) / 1048576).toFixed(1) + ' MB';
+  }
 }
+const takeSize = new Map();
 $('#fTakesAll').onclick = () => confirmDo('Delete all recordings?', 'Every saved recording and its log will be removed from this device.', 'Delete all', async () => { try { await caches.delete(TAKES); } catch (e) { /* ignore */ } renderTakes(); });
 
 function renderFiles() {
@@ -1600,9 +1950,8 @@ function renderFiles() {
   $('#fOpenVideo').disabled = !has;
   $('#fOpenVideo').textContent = project && project.videoName ? 'Replace video…' : 'Add video…';
   $('#fRemoveVideo').hidden = !(project && project.videoName);
-  $('#fVideoNote').textContent = !has ? 'Open a script first.' : project.videoName ? `Video: ${project.videoName}` + (videoKf && videoKf.maxGap > KF_WARN ? ` · It has a full picture only every ${Math.round(videoKf.maxGap)} s, which can make jumping in it freeze on some phones (seen on Pixels in Chrome, Edge and Brave). If that happens, use a copy made with a full picture every second (in HandBrake or Media Encoder: keyframe interval 1 s, or ffmpeg -g 25 for 25 fps video).` : '') : 'No video. Add the video the script’s timestamps refer to.';
+  $('#fVideoNote').textContent = !has ? 'Open a project first.' : project.videoName ? `Video: ${project.videoName}` : 'No video. Add the video the script’s timestamps refer to.';
   for (const id of ['#fExportDocx', '#fExportTxt', '#fClearMarks']) $(id).disabled = !has;
-  fillProjectList($('#projList'));
   renderVo();
   renderTakes();
 }
@@ -1612,7 +1961,7 @@ $('#fOpenVideo').onclick = () => $('#fileVideo').click();
 $('#fRemoveVideo').onclick = () => confirmDo('Remove the video?', 'The video is removed from this script on this device. Your file elsewhere isn’t touched.', 'Remove', async () => {
   await store.deleteVideo(project.id); project.videoName = null; clearVideo(); saveProject(); renderFiles();
 });
-$('#fileScript').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { $('#dlgFiles').open && $('#dlgFiles').close(); openScriptFile(f); } };
+$('#fileScript').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { for (const d of ['#dlgFiles', '#dlgProjects']) if ($(d).open) $(d).close(); openScriptFile(f); } };
 $('#fileVideo').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) openVideoFile(f); };
 $('#fExportDocx').onclick = () => download(project.name + ' (edited).docx', paragraphsToDocx(project.paras.map((p) => p.text)), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 $('#fExportTxt').onclick = () => download(project.name + ' (edited).txt', paragraphsToText(project.paras.map((p) => p.text)), 'text/plain');
@@ -1652,34 +2001,63 @@ function fillVoices() {
 }
 if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', fillVoices);
 
-async function syncSettingsUI() {
+function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
   $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
-  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug; $('#lnkVcheck').hidden = !settings.debug;
+  $('#selView').value = settings.view || 'auto';
+  $('#viewNote').textContent = {
+    auto: `Goes by the device: this one looks like a ${DEVICE === 'desktop' ? 'computer' : DEVICE}.`,
+    phone: 'Compact bars. The video goes under the script when the screen is upright, beside it when sideways.',
+    tablet: 'Full-size bars. The video goes under the script when the screen is upright, beside it when sideways.',
+    desktop: 'Script and video side by side with full-size bars, even in a narrow or installed app window.',
+  }[settings.view || 'auto'];
+  $('#sUi').value = settings.uiScale || 100; $('#oUi').textContent = (settings.uiScale || 100) + '%';
+  $('#sUiText').value = settings.uiText || 100; $('#oUiText').textContent = (settings.uiText || 100) + '%';
+  $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug;
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selOff').value = settings.offNotice;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
   $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery); $('#selMarkStr').value = settings.markStrength;
+  $('#selEvery').disabled = settings.scrollStyle === 'flow';
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
   $('#engineNote').textContent = settings.engine === 'google'
     ? 'Online speech: your browser’s own speech recognition (Google in Chrome, Microsoft in Edge on a PC). Can be more accurate, but it sends your audio to that service, needs internet, and can’t save recordings.'
     : 'On this device: your voice stays on this device and it works offline. The first start downloads a 41 MB speech model once.';
+}
+// Things that need storage lookups (downloaded voices, the speech model) are checked once when Settings opens.
+async function refreshSettingsExtras() {
   fillVoices();
   const cached = await modelIsCached();
   $('#aboutLine').textContent = `VO Prompter ${VERSION} · speech model ${cached ? 'downloaded' : 'not downloaded yet'}`;
 }
-$('#btnSettings').onclick = () => { pauseMic('dialog'); syncSettingsUI(); $('#dlgSettings').showModal(); };
+$('#btnSettings').onclick = () => { pauseMic('dialog'); syncSettingsUI(); $('#dlgSettings').showModal(); refreshSettingsExtras(); };
 const bindSel = (id, key, after) => { $(id).onchange = (e) => { settings[key] = e.target.value; saveSettings(); applySettings(); updateClasses(); syncSettingsUI(); if (after) after(); }; };
-$('#sText').oninput = (e) => { settings.textSize = +e.target.value; $('#oText').textContent = settings.textSize + ' px'; applySettings(); };
-$('#sText').onchange = () => { saveSettings(); scrollToCurrent(true); };
+// The script resizes at most once a frame while you drag; line estimates and the reading spot settle on release.
+let textSizeFrame = 0;
+$('#sText').oninput = (e) => {
+  settings.textSize = +e.target.value; $('#oText').textContent = settings.textSize + ' px';
+  if (!textSizeFrame) textSizeFrame = requestAnimationFrame(() => { textSizeFrame = 0; document.documentElement.style.setProperty('--script-size', settings.textSize + 'px'); });
+};
+$('#sText').onchange = () => { saveSettings(); applySettings(); estimateParas(); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); };
 bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selOverlap', 'overlap'); bindSel('#selTheme', 'theme');
 bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
+$('#selView').onchange = (e) => {
+  settings.view = e.target.value; settings.viewSet = true;
+  settings.desktop = settings.view === 'desktop'; // keeps the main app's Desktop view checkbox in step
+  saveSettings(); applyView(); layout(); syncSettingsUI(); setTimeout(() => { estimateParas(); scrollToCurrent(true); }, 150);
+};
+// The interface sliders apply when you let go: the panel you're dragging in changes size with them.
+$('#sUi').oninput = (e) => { $('#oUi').textContent = e.target.value + '%'; };
+$('#sUiText').oninput = (e) => { $('#oUiText').textContent = e.target.value + '%'; };
+for (const [id, key] of [['#sUi', 'uiScale'], ['#sUiText', 'uiText']]) {
+  $(id).onchange = (e) => { settings[key] = +e.target.value; saveSettings(); applyView(); layout(); setTimeout(() => scrollToCurrent(true), 150); };
+}
 $('#selDebug').onchange = (e) => {
-  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug; $('#btnVidTest').hidden = !settings.debug; $('#lnkVcheck').hidden = !settings.debug;
+  settings.debug = e.target.value === 'on'; saveSettings(); $('#btnDbg').hidden = !settings.debug;
   if (settings.debug) {
     dbgLog.length = 0; dbgT0 = performance.now();
     dbg('start', `VO Prompter ${VERSION} · ${navigator.userAgent}`);
@@ -1687,39 +2065,6 @@ $('#selDebug').onchange = (e) => {
     dbg('voices', `${vs.length} system voices; English: ` + englishVoices().map((v) => `${v.name} [${v.lang}${v.localService ? ', local' : ', online'}${v.default ? ', default' : ''}]`).join('; '));
   }
 };
-// Video test (debug): plays the script's video in a plain player, step by step, to find which step a browser trips on.
-$('#btnVidTest').onclick = async () => {
-  if (!hasVideo() || !videoBlob) { toast('Add a video to this script first.'); return; }
-  $('#dlgSettings').close(); $('#dlgVidTest').showModal();
-  const v = $('#vtVideo'), out = $('#vtOut');
-  try { video.pause(); } catch (e) { /* ignore */ }
-  const say = (m) => { out.textContent += m + '\n'; dbg('vtest', m); };
-  out.textContent = '';
-  const st = () => { const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : { totalVideoFrames: '?' }; return `t ${v.currentTime.toFixed(1)} ready ${v.readyState} frames ${q.totalVideoFrames}${v.error ? ' error ' + v.error.code : ''}`; };
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const run = async (label, src, seekTo) => {
-    v.pause(); v.removeAttribute('src'); v.load();
-    v.src = src;
-    const t0 = performance.now();
-    await new Promise((r) => { v.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 8000); });
-    say(`${label}: metadata after ${Math.round(performance.now() - t0)} ms · ${v.videoWidth}x${v.videoHeight}`);
-    if (seekTo) { v.currentTime = seekTo; await new Promise((r) => { v.addEventListener('seeked', r, { once: true }); setTimeout(r, 8000); }); say(`  after jump to ${seekTo} s: ${st()}`); }
-    try { await v.play(); } catch (e) { say('  play() refused: ' + e.message); }
-    await wait(5000);
-    say(`  after 5 s playing: ${st()}`);
-    v.pause();
-  };
-  const blobUrl = URL.createObjectURL(videoBlob);
-  const swUrl = navigator.serviceWorker && navigator.serviceWorker.controller && project ? 'local-video/' + encodeURIComponent(project.id) + '?t=' + Date.now() : null;
-  try {
-    say(`App's own player now: ${video.readyState} ready, mode ${videoMode}`);
-    await run('1. stored file, from the start', blobUrl, 0);
-    await run('2. stored file, jump to 7:36', blobUrl, 456);
-    if (swUrl) { await run('3. served file, from the start', swUrl, 0); await run('4. served file, jump to 7:36', swUrl, 456); }
-    say('Done. Copy the debug log (Settings) and send it.');
-  } finally { URL.revokeObjectURL(blobUrl); }
-};
-$('#dlgVidTest').addEventListener('close', () => { const v = $('#vtVideo'); v.pause(); v.removeAttribute('src'); v.load(); });
 $('#btnDbg').onclick = async () => {
   const text = (await diagText()) + '\n\nDebug log:\n' + (dbgLog.join('\n') || '(empty)');
   let ok = true;
@@ -1744,7 +2089,7 @@ $('#selEngine').onchange = (e) => {
   } else apply();
 };
 bindSel('#selMic', 'micSource', () => { if (listening) { stopListening(); startListening(); } });
-bindSel('#selUnit', 'ttsUnit'); bindSel('#selVoice', 'ttsVoice');
+bindSel('#selUnit', 'ttsUnit'); bindSel('#selVoice', 'ttsVoice', fillVoices);
 $('#sRate').oninput = (e) => { settings.ttsRate = +e.target.value; $('#oRate').textContent = '×' + settings.ttsRate.toFixed(2); };
 $('#sRate').onchange = saveSettings;
 $('#btnTestVoice').onclick = () => {
@@ -1801,8 +2146,7 @@ async function diagText() {
     `Script: ${model ? `${model.N} words, ${model.blocks.length} paragraphs, ${model.anchors.length} timestamps` : 'none'} · video: ${hasVideo() ? 'yes' : 'no'}`,
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
-    `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'} · full picture every ${videoKf ? videoKf.maxGap.toFixed(1) + ' s at most' : '?'}`; })() : 'none'}`,
-    `Storage: ${await (async () => { try { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; const per = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : 'n/a'; return `persistent ${per} · used ${e ? Math.round(e.usage / 1e6) : '?'} MB of ${e ? Math.round(e.quota / 1e6) : '?'} MB`; } catch (x) { return 'unavailable'; } })()} · video from ${hasVideo() ? videoMode : '-'}${settings.videoMode ? ' (device setting: ' + settings.videoMode + ')' : ''} · offline helper ${navigator.serviceWorker && navigator.serviceWorker.controller ? 'active' : 'not active'}`,
+    `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.29 beta';
+const VERSION = '1.1.30 beta';
 const $ = (s) => document.querySelector(s);
 
 // Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
@@ -162,60 +162,132 @@ function renderEmpty() {
 
 function isEdited(pid) {
   if (!project) return false;
-  const p = project.paras.find((x) => x.id === pid);
+  const p = paraById.get(pid);
   return !(pid in project.orig) || (p && project.orig[pid] !== p.text);
 }
 
+// ---------- the page ----------
+// Every paragraph has a placeholder about its height, and only the paragraphs within a couple of screens of what
+// you see (and around the reading spot) hold their words. A whole book stays as quick as a short script: buttons,
+// panels and mode changes only touch the words on the page. Placeholders take their real height once shown.
+let shells = [], rendered = new Uint8Array(0), measured = new Float32Array(0), blockOfTok = new Int32Array(0);
+let blockIdx = new Map(), paraById = new Map(), pageIO = null, trimTimer = null;
+const nearScreen = new Set();
+function blockChars(b) {
+  let n = 0;
+  for (const part of b.parts) n += part.type === 'w' ? model.tokens[part.ti].text.length : part.type === 'stamp' ? 5 : part.type === 'ns' ? Math.ceil(part.text.length * 0.66) + 1 : part.text.length;
+  return n;
+}
 function renderDoc() {
+  if (pageIO) { pageIO.disconnect(); pageIO = null; }
+  clearTimeout(trimTimer); nearScreen.clear();
   docEl.textContent = '';
   paraEls.clear();
   editing = null;
-  if (!project || !model) { renderEmpty(); return; }
-  const T = model.tokens.length;
-  tokEls = new Array(T); gapEls = new Array(T).fill(null); tokCls = new Array(T).fill(''); gapCls = new Array(T).fill('');
+  if (!project || !model) { shells = []; renderEmpty(); return; }
+  const T = model.tokens.length, B = model.blocks.length;
+  tokEls = new Array(T).fill(null); gapEls = new Array(T).fill(null); tokCls = new Array(T).fill(''); gapCls = new Array(T).fill('');
+  shells = new Array(B); rendered = new Uint8Array(B); measured = new Float32Array(B); blockOfTok = new Int32Array(Math.max(1, T));
+  blockIdx = new Map(); paraById = new Map(project.paras.map((x) => [x.id, x]));
   const frag = document.createDocumentFragment();
-  for (const b of model.blocks) {
+  model.blocks.forEach((b, bi) => {
     const p = document.createElement('p');
-    p.className = 'para k-' + b.kind;
-    p.dataset.pid = b.pid;
-    let lastTok = -1, chars = 0;
-    for (const part of b.parts) {
-      if (part.type === 'w') {
-        const s = document.createElement('span');
-        s.className = 'w'; s.dataset.t = part.ti; s.textContent = model.tokens[part.ti].text;
-        tokEls[part.ti] = s; p.appendChild(s); lastTok = part.ti; chars += model.tokens[part.ti].text.length;
-      } else if (part.type === 'gap') {
-        const g = document.createElement('span');
-        g.className = 'g'; g.textContent = part.text; p.appendChild(g); chars += part.text.length;
-        if (lastTok >= 0 && !gapEls[lastTok]) gapEls[lastTok] = g;
-      } else if (part.type === 'stamp') {
-        const s = document.createElement('span');
-        s.className = 'stamp'; s.textContent = fmtTime(part.t); s.dataset.time = part.t; s.title = 'Video time: tap to jump the video here';
-        p.appendChild(s); chars += 5;
-        lastTok = -1;
-      } else {
-        const s = document.createElement('span');
-        s.className = 'ns'; s.textContent = part.text; p.appendChild(s); chars += Math.ceil(part.text.length * 0.66) + 1;
-        p.appendChild(document.createTextNode(' '));
-        lastTok = -1;
-      }
-    }
-    p._chars = chars;
-    if (isEdited(b.pid)) { const d = document.createElement('span'); d.className = 'edited-dot'; d.title = 'Edited'; p.appendChild(d); }
+    p.className = 'para k-' + b.kind; p.dataset.pid = b.pid; p.dataset.bi = bi; p._chars = blockChars(b);
+    for (let t = b.t0; t < b.t1; t++) blockOfTok[t] = bi;
+    shells[bi] = p; paraEls.set(b.pid, p); blockIdx.set(b.pid, bi);
     frag.appendChild(p);
-    paraEls.set(b.pid, p);
-  }
+  });
   docEl.appendChild(frag);
   if (mode === 'edit') addEndButton(true);
   guideA = guideB = -1; lastFollowPos = follower.pos; lineMemo.slots = [];
   blockByPid = new Map(model.blocks.map((b) => [b.pid, b]));
-  findTok = new Uint8Array(T); findGroup = new Int32Array(T);
-  estimateParas();
+  findTok = new Uint8Array(T); findGroup = new Int32Array(T); findWords = null;
+  sizeShells(true);
   buildHlTok(); buildBmTok();
   if (findState.q) runFind(findState.q, false);
+  // the words around the reading spot now; the rest as they come near the screen
+  const cur = curBlock();
+  for (let bi = Math.max(0, cur - 12); bi <= Math.min(B - 1, cur + 25); bi++) renderBlock(bi);
+  if ('IntersectionObserver' in window) {
+    pageIO = new IntersectionObserver(onPageIO, { root: scriptEl, rootMargin: '150% 0px' });
+    for (const p of shells) pageIO.observe(p);
+  } else for (let bi = 0; bi < B; bi++) renderBlock(bi);
   updateClasses();
   paint();
   tocDirty = true;
+}
+const curBlock = () => (model && model.N ? blockOfTok[model.units[Math.min(follower.pos, model.N - 1)].ti] || 0 : 0);
+function renderBlock(bi) {
+  if (rendered[bi] || !shells[bi]) return;
+  const b = model.blocks[bi], p = shells[bi];
+  const frag = document.createDocumentFragment();
+  let lastTok = -1;
+  for (const part of b.parts) {
+    if (part.type === 'w') {
+      const s = document.createElement('span');
+      s.className = 'w'; s.dataset.t = part.ti; s.textContent = model.tokens[part.ti].text;
+      tokEls[part.ti] = s; frag.appendChild(s); lastTok = part.ti;
+    } else if (part.type === 'gap') {
+      const g = document.createElement('span');
+      g.className = 'g'; g.textContent = part.text; frag.appendChild(g);
+      if (lastTok >= 0 && !gapEls[lastTok]) gapEls[lastTok] = g;
+    } else if (part.type === 'stamp') {
+      const s = document.createElement('span');
+      s.className = 'stamp'; s.textContent = fmtTime(part.t); s.dataset.time = part.t; s.title = 'Video time: tap to jump the video here';
+      frag.appendChild(s);
+      lastTok = -1;
+    } else {
+      const s = document.createElement('span');
+      s.className = 'ns'; s.textContent = part.text; frag.appendChild(s);
+      frag.appendChild(document.createTextNode(' '));
+      lastTok = -1;
+    }
+  }
+  if (isEdited(b.pid)) { const d = document.createElement('span'); d.className = 'edited-dot'; d.title = 'Edited'; frag.appendChild(d); }
+  p.textContent = ''; p.appendChild(frag); p.style.height = '';
+  rendered[bi] = 1;
+  for (let t = b.t0; t < b.t1; t++) { tokCls[t] = ''; gapCls[t] = ''; }
+  if (b.t1 > b.t0) markDirtyTokens(b.t0, b.t1 - 1);
+}
+function unrenderBlock(bi) {
+  if (!rendered[bi]) return;
+  const b = model.blocks[bi], p = shells[bi];
+  if (editing && editing.pid === b.pid) return;
+  p.style.height = (measured[bi] || p.offsetHeight) + 'px';
+  p.textContent = '';
+  for (let t = b.t0; t < b.t1; t++) { tokEls[t] = null; gapEls[t] = null; tokCls[t] = ''; gapCls[t] = ''; }
+  rendered[bi] = 0;
+}
+// the element of word t, drawing its paragraph first if it isn't on the page
+function tokEl(t) {
+  if (!model || t < 0 || t >= model.tokens.length) return null;
+  if (!tokEls[t]) renderBlock(blockOfTok[t]);
+  return tokEls[t];
+}
+function onPageIO(entries) {
+  for (const e of entries) {
+    const bi = +e.target.dataset.bi;
+    if (e.isIntersecting) { nearScreen.add(bi); renderBlock(bi); } else nearScreen.delete(bi);
+  }
+  clearTimeout(trimTimer);
+  trimTimer = setTimeout(trimPage, 1200);
+}
+// Paragraphs that have gone well off screen give their words back (keeping their height), except around the
+// reading spot, the sentence being read aloud, the current find match and a highlight you're making.
+function trimPage() {
+  if (!model || !shells.length) return;
+  const keep = new Set(nearScreen);
+  const around = (bi) => { for (let k = bi - 3; k <= bi + 6; k++) keep.add(k); };
+  around(curBlock());
+  if (tts && tts.cur >= 0) around(blockOfTok[tts.cur]);
+  if (hlStart >= 0) keep.add(blockOfTok[hlStart]);
+  const fh = findState.hits[findState.cur];
+  if (fh) keep.add(blockOfTok[fh[0]]);
+  const drop = [];
+  for (let bi = 0; bi < rendered.length; bi++) if (rendered[bi] && !keep.has(bi)) drop.push(bi);
+  if (!drop.length) return;
+  for (const bi of drop) measured[bi] = shells[bi].offsetHeight; // measure all first: one layout
+  for (const bi of drop) unrenderBlock(bi);
 }
 function addEndButton(on) {
   const old = docEl.querySelector('.add-end');
@@ -226,16 +298,22 @@ function addEndButton(on) {
   add.onclick = () => addParagraph(null);
   docEl.appendChild(add);
 }
-// Height estimate for paragraphs that haven't been on screen yet (see .doc > .para in the styles): their length
-// over the characters that fit on a line at this text size and width.
-function estimateParas() {
-  if (!paraEls.size) return;
+// Placeholder heights: the real height once a paragraph has been shown (at this text size and width), otherwise
+// an estimate from its length over the characters that fit on a line.
+function sizeShells(reestimate) {
+  if (!shells.length) return;
   const w = Math.max(160, (docEl.clientWidth || scriptEl.clientWidth) - 15);
   const fs = settings.textSize;
-  for (const p of paraEls.values()) {
-    const size = p.classList.contains('k-spoken') ? fs : Math.max(fs * 0.62, 11);
-    const lines = Math.max(1, Math.ceil(((p._chars || 1) * size * 0.5) / w));
-    if (p._pl !== lines) { p._pl = lines; p.style.setProperty('--pl', lines); }
+  for (let bi = 0; bi < shells.length; bi++) {
+    if (reestimate) measured[bi] = 0;
+    if (rendered[bi]) continue;
+    const p = shells[bi];
+    let h = measured[bi];
+    if (!h) {
+      const size = p.classList.contains('k-spoken') ? fs : Math.max(fs * 0.62, 11);
+      h = Math.max(1, Math.ceil(((p._chars || 1) * size * 0.5) / w)) * size * 1.5;
+    }
+    p.style.height = h + 'px';
   }
 }
 
@@ -364,9 +442,13 @@ function paint() {
   const sentMode = settings.said === 'sent' || settings.said === 'sent2';
   const chEl = paintBuf.el, chCls = paintBuf.cls;
   chEl.length = 0; chCls.length = 0;
-  if (hi >= lo) {
-    let next = tokState(lo);
-    for (let t = lo; t <= hi; t++) {
+  // only paragraphs on the page are painted; the others get their state when they're drawn
+  for (let bi = hi >= lo ? blockOfTok[lo] : 1, b1 = hi >= lo ? blockOfTok[hi] : 0; bi <= b1; bi++) {
+    if (!rendered[bi]) continue;
+    const blk = model.blocks[bi], s0 = Math.max(lo, blk.t0), e0 = Math.min(hi, blk.t1 - 1);
+    if (e0 < s0) continue;
+    let next = tokState(s0);
+    for (let t = s0; t <= e0; t++) {
       const cur = next;
       next = t + 1 < T ? tokState(t + 1) : null;
       const el = tokEls[t];
@@ -409,15 +491,23 @@ function paint() {
 let userScrollUntil = 0, anim = null;
 function smoothScrollTo(top, dur = 280) {
   top = Math.max(0, Math.min(top, scriptEl.scrollHeight - scriptEl.clientHeight));
-  const from = scriptEl.scrollTop, d = top - from;
+  let from = scriptEl.scrollTop;
+  const d = top - from;
   if (Math.abs(d) < 1) return;
   if (Math.abs(d) > scriptEl.clientHeight * 2) { scriptEl.scrollTop = top; return; }
   const t0 = performance.now();
-  anim = { top };
+  const a = { top };
+  anim = a;
+  let last = from;
   const step = (now) => {
-    if (!anim || anim.top !== top) return;
+    if (anim !== a) return;
+    // paragraphs drawn while this runs can change height above the view, and the browser then shifts the page to
+    // keep what you see in place; move with that shift instead of undoing it
+    const moved = scriptEl.scrollTop - last;
+    if (Math.abs(moved) > 0.5) from += moved;
     const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
     scriptEl.scrollTop = from + d * e;
+    last = scriptEl.scrollTop;
     if (k < 1) requestAnimationFrame(step); else anim = null;
   };
   requestAnimationFrame(step);
@@ -447,9 +537,9 @@ scriptEl.addEventListener('touchmove', onUserScroll, { passive: true });
 $('#backPill').onclick = () => { userScrollUntil = 0; scrollToCurrent(true); };
 function currentEl() {
   if (!model) return null;
-  if (tts && tts.cur >= 0) return tokEls[tts.cur];
+  if (tts && tts.cur >= 0) return tokEl(tts.cur);
   const p = Math.min(follower.pos, model.N - 1);
-  return p >= 0 ? tokEls[model.units[p].ti] : null;
+  return p >= 0 ? tokEl(model.units[p].ti) : null;
 }
 const scrollToCurrent = (force) => { if (force) syncStable(); keepInView(currentEl(), force); };
 // Start, taps and arrow keys move the page straight to the reading spot, in every scroll style.
@@ -485,9 +575,9 @@ function autoScroll() {
   const dt = Math.min(0.1, (now - (lastScrollT || now)) / 1000); lastScrollT = now;
   if (!model || !model.N) return;
   let el, lastWord;
-  if (tts && tts.cur >= 0) { el = tokEls[tts.cur]; lastWord = 0; }
+  if (tts && tts.cur >= 0) { el = tokEl(tts.cur); lastWord = 0; }
   else if (listening) {
-    el = tokEls[model.units[Math.min(stable.pos, model.N - 1)].ti];
+    el = tokEl(model.units[Math.min(stable.pos, model.N - 1)].ti);
     const h = follower.hist; lastWord = h.length ? h[h.length - 1].t * 1000 : 0;
   } else return;
   if (!el) return;
@@ -498,7 +588,7 @@ function autoScroll() {
   const ahead = sr.height >= lineH * (settings.linesAbove + 4) ? 2.2 : 0.6;
   let liveBottom = r.bottom, liveTop = r.top;
   if (listening && !(tts && tts.cur >= 0)) {
-    const le = tokEls[model.units[Math.min(shown.pos, model.N - 1)].ti];
+    const le = tokEl(model.units[Math.min(shown.pos, model.N - 1)].ti);
     // (only a step onto the next line or two counts: a bigger jump waits until it has settled)
     if (le && le !== el) { const lr = le.getBoundingClientRect(); if (lr.bottom > liveBottom && lr.top - r.top <= lineH * 3.6) { liveBottom = lr.bottom; liveTop = lr.top; } }
   }
@@ -517,7 +607,7 @@ function autoScroll() {
     const si = model.tokens[model.units[Math.min(stable.pos, model.N - 1)].ti].sent;
     if (si >= 0) {
       if (scrollSent < 0 || si < scrollSent || si - scrollSent >= sentN) scrollSent = si;
-      const sEl = tokEls[model.sentences[scrollSent].t0];
+      const sEl = tokEl(model.sentences[scrollSent].t0);
       move = Math.min(below, (sEl ? sEl.getBoundingClientRect().top : r.top) - want);
     }
     due = move > (slow ? 1 : lineH * 0.5);
@@ -567,7 +657,7 @@ function flowScroll(dt, sr, lineH, want) {
     }
   }
   p = Math.max(0, Math.min(p, model.N - 0.001));
-  const u = Math.floor(p), f = p - u, el = tokEls[model.units[u].ti];
+  const u = Math.floor(p), f = p - u, el = tokEl(model.units[u].ti);
   if (!el) return;
   const r = el.getBoundingClientRect(), pr = el.parentElement.getBoundingClientRect();
   const x0 = pr.left + 15, x1 = Math.max(x0 + 1, pr.right);
@@ -946,7 +1036,7 @@ function layout() {
 let layoutTimer = null;
 window.addEventListener('resize', () => {
   applyView(); layout(); clearTimeout(layoutTimer);
-  layoutTimer = setTimeout(() => { estimateParas(); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); }, 200);
+  layoutTimer = setTimeout(() => { sizeShells(true); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); }, 200);
 });
 (() => {
   const grip = $('#grip');
@@ -1107,12 +1197,13 @@ function addParagraph(afterPid) {
 function snapshot() {
   const st = {}, txt = {};
   if (model) {
+    const byId = new Map(model.paras.map((x) => [x.id, x]));
     for (const b of model.blocks) {
       if (b.u1 <= b.u0) continue;
       let s = '';
       for (let u = b.u0; u < b.u1; u++) s += follower.eff(u);
       st[b.pid] = s;
-      const p = model.paras.find((x) => x.id === b.pid); txt[b.pid] = p ? p.text : '';
+      const p = byId.get(b.pid); txt[b.pid] = p ? p.text : '';
     }
   }
   let pos = null;
@@ -1126,9 +1217,10 @@ function snapshot() {
 function restore(m, snap) {
   const status = new Uint8Array(m.N);
   let pos = 0;
+  const byId = new Map(m.paras.map((x) => [x.id, x]));
   for (const b of m.blocks) {
     const s = snap.st[b.pid];
-    const para = m.paras.find((x) => x.id === b.pid);
+    const para = byId.get(b.pid);
     if (s && s.length === b.u1 - b.u0 && (!snap.txt || snap.txt[b.pid] === undefined || snap.txt[b.pid] === para.text)) {
       for (let k = 0; k < s.length; k++) status[b.u0 + k] = +s[k];
     }
@@ -1494,6 +1586,7 @@ $('#cNo').onclick = () => { confirmFn = null; $('#dlgConfirm').close(); };
 // ---------- find ----------
 // Matches whole words in order; the last word you type may be partial. Tap a match to read (or hear) from there.
 const findState = { q: '', hits: [], cur: -1 };
+let findWords = null; // [token, normalised word], made once per script
 const normWord = (s) => s.toLowerCase().replace(/[’']/g, '').replace(/[^a-z0-9]/g, '');
 function runFind(q, jump = true) {
   findState.q = q;
@@ -1504,8 +1597,8 @@ function runFind(q, jump = true) {
   const qs = q.split(/\s+/).map(normWord).filter(Boolean);
   const hits = [];
   if (qs.length) {
-    const words = [];
-    for (let t = 0; t < T; t++) { const n = normWord(model.tokens[t].text); if (n) words.push([t, n]); }
+    if (!findWords) { findWords = []; for (let t = 0; t < T; t++) { const n = normWord(model.tokens[t].text); if (n) findWords.push([t, n]); } }
+    const words = findWords;
     for (let i = 0; i + qs.length <= words.length; i++) {
       let ok = true;
       for (let k = 0; k < qs.length && ok; k++) ok = k === qs.length - 1 ? words[i + k][1].startsWith(qs[k]) : words[i + k][1] === qs[k];
@@ -1528,7 +1621,7 @@ function runFind(q, jump = true) {
 }
 function showFindCur() {
   const h = findState.hits[findState.cur];
-  if (!h || !tokEls[h[0]]) return;
+  if (!h || !tokEl(h[0])) return;
   userScrollUntil = performance.now() + 60000; // keep the page where the match is while you look
   const el = tokEls[h[0]], sr = scriptEl.getBoundingClientRect(), r = el.getBoundingClientRect();
   smoothScrollTo(scriptEl.scrollTop + r.top - sr.top - settings.textSize * 1.5 * Math.min(3, settings.linesAbove), 300);
@@ -1667,7 +1760,7 @@ function tocEntries() {
   const T = tokens.length;
   for (const b of blocks) {
     if (b.kind === 'heading' || b.kind === 'marker') {
-      out.push({ kind: 'section', u: b.u0, t: -1, el: () => paraEls.get(b.pid), label: blockText(b).replace(/^#+\s*/, '') });
+      out.push({ kind: 'section', u: b.u0, t: -1, pid: b.pid, el: () => paraEls.get(b.pid), label: blockText(b).replace(/^#+\s*/, '') });
       continue;
     }
     if (b.kind !== 'spoken') continue;
@@ -1680,7 +1773,7 @@ function tocEntries() {
       let ti = -1;
       for (let j = i + 1; j < b.parts.length; j++) if (b.parts[j].type === 'w') { ti = b.parts[j].ti; break; }
       const k = ns;
-      out.push({ kind: 'section', u: ti >= 0 ? tokens[ti].u0 : b.u1, t: ti, el: () => { const p = paraEls.get(b.pid); return p ? p.querySelectorAll('.ns')[k] || p : null; }, label: inner });
+      out.push({ kind: 'section', u: ti >= 0 ? tokens[ti].u0 : b.u1, t: ti, pid: b.pid, el: () => { const p = paraEls.get(b.pid); return p ? p.querySelectorAll('.ns')[k] || p : null; }, label: inner });
     });
   }
   for (const m of (project && project.bm) || []) {
@@ -1779,6 +1872,8 @@ function goToEntry(e) {
   follower.jumpTo(Math.min(e.u, model.N - 1), false);
   if (listening) seekVideoToPos();
   userScrollUntil = 0; syncStable();
+  if (e.t >= 0) tokEl(e.t);
+  if (e.pid && blockIdx.has(e.pid)) renderBlock(blockIdx.get(e.pid));
   const el = (typeof e.el === 'function' ? e.el() : null) || (e.t >= 0 ? tokEls[e.t] : null) || currentEl();
   settleScroll(el);
 }
@@ -1786,8 +1881,12 @@ function goToEntry(e) {
 // put in place once more after the page has caught up.
 function settleScroll(el) {
   if (!el) return;
+  const p = el.closest ? el.closest('.para') : null, bi = p ? +p.dataset.bi : -1;
+  if (bi >= 0) for (let k = Math.max(0, bi - 8); k <= Math.min(shells.length - 1, bi + 8); k++) renderBlock(k);
   keepInView(el, true);
-  requestAnimationFrame(() => requestAnimationFrame(() => { if (el.isConnected) keepInView(el, true); }));
+  const again = () => { if (el.isConnected) keepInView(el, true); };
+  requestAnimationFrame(() => requestAnimationFrame(again));
+  setTimeout(again, 450);
 }
 $('#btnToc').onclick = () => { if (!model) { toast('Open a project first.'); return; } pauseMic('dialog'); renderToc(); $('#dlgToc').showModal(); };
 for (const b of document.querySelectorAll('#dlgToc .seg button')) b.onclick = () => { tocFilter = b.dataset.f; renderToc(); };
@@ -2039,7 +2138,7 @@ $('#sText').oninput = (e) => {
   settings.textSize = +e.target.value; $('#oText').textContent = settings.textSize + ' px';
   if (!textSizeFrame) textSizeFrame = requestAnimationFrame(() => { textSizeFrame = 0; document.documentElement.style.setProperty('--script-size', settings.textSize + 'px'); });
 };
-$('#sText').onchange = () => { saveSettings(); applySettings(); estimateParas(); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); };
+$('#sText').onchange = () => { saveSettings(); applySettings(); sizeShells(true); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); };
 bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selOverlap', 'overlap'); bindSel('#selTheme', 'theme');
 bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
 bindSel('#selScrollStyle', 'scrollStyle');
@@ -2048,7 +2147,7 @@ $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on';
 $('#selView').onchange = (e) => {
   settings.view = e.target.value; settings.viewSet = true;
   settings.desktop = settings.view === 'desktop'; // keeps the main app's Desktop view checkbox in step
-  saveSettings(); applyView(); layout(); syncSettingsUI(); setTimeout(() => { estimateParas(); scrollToCurrent(true); }, 150);
+  saveSettings(); applyView(); layout(); syncSettingsUI(); setTimeout(() => { sizeShells(true); scrollToCurrent(true); }, 150);
 };
 // The interface sliders apply when you let go: the panel you're dragging in changes size with them.
 $('#sUi').oninput = (e) => { $('#oUi').textContent = e.target.value + '%'; };
@@ -2163,4 +2262,6 @@ $('#btnDiag').onclick = async () => {
 window.__vop = {
   follower, get model() { return model; }, get state() { return { mode, listening, follow, sound, pos: follower.pos, off: follower.off, vTime: video.currentTime, vRate: video.playbackRate, paused: video.paused }; },
   input: (t, f) => follower.input(t, f),
+  tokEl: (t) => tokEl(t), // the element of word t, drawn if needed
+  get counts() { return project ? { bm: (project.bm || []).length, hl: (project.hl || []).length, drawn: rendered.reduce((n, x) => n + x, 0), paragraphs: shells.length } : null; },
 };

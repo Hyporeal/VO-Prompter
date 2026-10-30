@@ -113,9 +113,6 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .doc { max-width: 940px; margin: 0 auto; }
 .doc::after { content: ""; display: block; height: 60vh; } /* lets the last lines scroll up to the top */
 .para { font-size: var(--script-size); line-height: 1.5; margin: 0 0 .62em; padding: 0 0 0 12px; border-left: 3px solid transparent; overflow-wrap: anywhere; }
-/* Paragraphs off screen skip style and layout work, which keeps buttons and dialogs quick on long scripts. Until a
-   paragraph has been on screen, its height is estimated from its length (--pl lines). */
-.doc > .para { content-visibility: auto; contain-intrinsic-block-size: auto calc(var(--pl, 2) * 1.5em); }
 /* big changes at once (a jump, a mode or setting change) apply instantly; fades are for words changing as you read */
 .doc.snap .w, .doc.snap .g { transition: none !important; }
 .para.k-heading, .para.k-note, .para.k-marker, .para.k-skip, .para.k-end, .para.k-after-end {

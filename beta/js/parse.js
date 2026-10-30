@@ -284,7 +284,7 @@ async function pdfToParagraphs(buf) {
   if (!pdfjsP) pdfjsP = import(new URL('../vendor/pdfjs/pdf.min.mjs', location.href).href).then((m) => { m.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', location.href).href; return m; });
   const pdfjs = await pdfjsP;
   const doc = await pdfjs.getDocument({ data: new Uint8Array(buf), isEvalSupported: false, useSystemFonts: false }).promise;
-  const out = [];
+  const out = [], sizes = []; // sizes: [paragraph index, font size] to find headings once the body text size is known
   for (let n = 1; n <= doc.numPages; n++) {
     const page = await doc.getPage(n);
     const tc = await page.getTextContent();
@@ -314,7 +314,7 @@ async function pdfToParagraphs(buf) {
     ratios.sort((a, b) => a - b);
     const normal = ratios.length ? Math.max(1, ratios[Math.floor(ratios.length * 0.2)]) : 1.2;
     const left = Math.min(...built.map((l) => l.x)), right = Math.max(...built.map((l) => l.right));
-    let para = '';
+    let para = '', paraH = 0;
     built.forEach((l, i) => {
       const prev = built[i - 1];
       const hm = prev ? Math.max(prev.h, l.h) : l.h;
@@ -323,14 +323,17 @@ async function pdfToParagraphs(buf) {
         || (l.x - left > l.h * 1.2 && prev.x - left < l.h * 0.5)                  // an indented first line
         || /^(\[|#|\/\/|\d{1,2}:\d{2}(:\d{2})?\b)/.test(l.s)                    // a direction, heading, note or timestamp
         || (/[.!?:"”]$/.test(prev.s) && prev.right < right - (right - left) * 0.2); // a short line that ends a sentence
-      if (brk && para) { out.push(para); para = ''; }
+      if (brk && para) { out.push(para); sizes.push(paraH); para = ''; }
+      if (!para) paraH = l.h; else paraH = Math.min(paraH, l.h);
       if (para && /[a-z]-$/.test(para) && /^[a-z]/.test(l.s)) para = para.slice(0, -1) + l.s; // a word split over two lines
       else para += (para ? ' ' : '') + l.s;
     });
-    if (para) out.push(para);
+    if (para) { out.push(para); sizes.push(paraH); }
   }
   try { doc.destroy(); } catch (e) { /* ignore */ }
-  return out;
+  // a short paragraph in clearly bigger type than the body text is a heading
+  const body = sizes.slice().sort((a, b) => a - b)[Math.floor(sizes.length / 2)] || 0;
+  return out.map((t, i) => (body && sizes[i] >= body * 1.18 && t.length <= 90 && !/^[[#]|^\/\//.test(t) ? '# ' + t : t));
 }
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';

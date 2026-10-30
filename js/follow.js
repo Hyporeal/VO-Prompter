@@ -208,6 +208,34 @@ export class Follower {
       this.phraseStart[u] = ps;
     }
     this.phraseStart[model.N] = ps;
+    // syllables before each unit, for the reading pace
+    this.cumSyl = new Float64Array(model.N + 1);
+    for (let u = 0; u < model.N; u++) this.cumSyl[u + 1] = this.cumSyl[u] + (model.units[u].syl || 1);
+    this.pace = { syl: 0, t: 0, p: this.pos };
+  }
+
+  // Your speaking pace in syllables per second, counted only while you're speaking (steps that come within a
+  // second of each other), so pauses don't drag it down. Long words take longer to say than short ones, so
+  // syllables predict where you are better than words do.
+  notePace(p, now) {
+    const pc = this.pace;
+    if (p > pc.p && pc.t && now - pc.t < 1.2 && now > pc.t) {
+      // a running ratio of syllables to seconds (not an average of bursty per-update speeds)
+      const ds = this.cumSyl[Math.min(p, this.m.N)] - this.cumSyl[Math.min(pc.p, this.m.N)];
+      if (ds / (now - pc.t) < 14) { pc.s = (pc.s || 0) * 0.93 + ds; pc.d = (pc.d || 0) * 0.93 + (now - pc.t); if (pc.d > 1.5) pc.syl = pc.s / pc.d; }
+    }
+    if (p !== pc.p) { pc.p = p; pc.t = now; }
+  }
+  sylRate() { return this.pace ? this.pace.syl : 0; }
+  // Where you probably are `sec` seconds of speech after unit p, at your pace (a fractional unit).
+  aheadOf(p, sec) {
+    const N = this.m.N, rate = this.sylRate();
+    if (!rate || sec <= 0) return p;
+    const c = this.cumSyl, target = c[Math.min(Math.floor(p), N)] + rate * sec;
+    let lo = Math.floor(p), hi = N;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (c[mid] <= target) lo = mid; else hi = mid - 1; }
+    if (lo >= N) return N;
+    return lo + (target - c[lo]) / Math.max(1e-6, c[lo + 1] - c[lo]);
   }
 
   // Where a reader who stumbles is likely to start again, nearest first: the start of the phrase and of the
@@ -222,13 +250,32 @@ export class Follower {
     return out.sort((x, y) => y - x);
   }
 
+  // At the start of a sentence (you've just finished the one before), do these first words of a new utterance
+  // match the start of the previous sentence and not this one? Then that's where you are. One word is enough only
+  // if it's a word with meaning (not "the", "we", "for" and the like).
+  retakeStart(h) {
+    const a = this.anchor, N = this.m.N, S = this.m.sentences, U = this.m.units;
+    if (a <= 0 || a >= N) return -1;
+    const si = this.sentOf[a];
+    if (si < 1 || S[si].u0 !== a) return -1;
+    const prev = S[si - 1];
+    if (prev.u1 - prev.u0 < h.length + 1) return -1;
+    // The first word must be right; of three words, one after it may differ (misheard, or "could" for "can").
+    const eq = (k, u, i) => u < N && (U[u].key === k || sim(U[u].key, k) >= (i ? 0.6 : 0.85));
+    const score = (u0) => h.reduce((n, k, i) => n + (eq(k, u0 + i, i) ? 1 : 0), 0);
+    const ps = eq(h[0], prev.u0, 0) ? score(prev.u0) : 0, ns = score(a);
+    if (ps < h.length - (h.length === 3 ? 1 : 0) || ns >= ps) return -1;
+    if (h.length === 1 && (FUNC.has(h[0]) || h[0].length < 3)) return -1;
+    return prev.u0;
+  }
+
   eff(u) { return this.prov && this.prov.has(u) ? this.prov.get(u) : this.status[u]; }
 
   setPos(p, jump) {
     const now = performance.now() / 1000;
-    if (jump) { this.hist = [{ t: now, p }]; this.jumped++; this.trustAfter = p + 8; if (p < this.trusted) this.trusted = p; }
+    if (jump) { this.hist = [{ t: now, p }]; this.jumped++; this.trustAfter = p + 8; if (p < this.trusted) this.trusted = p; if (this.pace) { this.pace.p = p; this.pace.t = 0; } }
     else {
-      if (p > this.pos) this.hist.push({ t: now, p });
+      if (p > this.pos) { this.hist.push({ t: now, p }); if (this.pace) this.notePace(p, now); }
       if (p >= this.trustAfter && p > this.trusted) this.trusted = p;
     }
     this.pos = p;
@@ -269,9 +316,23 @@ export class Follower {
     let jump = false, restarted = false;
     if (h.length) {
       let r = align(this.m.units, this.anchor, h);
+      // Retakes: right after finishing a sentence, the first word or two of a new utterance that match the start
+      // of the sentence just read (and not the next one) mean you're reading it again. Follow at once, instead
+      // of after three words.
+      const rt = this.segSkip === 0 && h.length <= 3 ? this.retakeStart(h) : -1;
+      if (rt >= 0) {
+        let r2 = align(this.m.units, rt, h);
+        // small words alone ("we can also") don't anchor an alignment, but the start of the sentence is known
+        if (!r2 || r2.first !== rt) {
+          const marks = new Map();
+          for (let i = 0; i < h.length; i++) marks.set(rt + i, READ);
+          r2 = { first: rt, end: rt + h.length, marks, matches: h.length, content: 0, trailing: 0, tailHit: h.length, tailN: h.length, score: h.length, hypUnit: [-1, ...h.map((_, i) => rt + i)], maxRun: h.length };
+        }
+        r = r2; this.anchor = rt; restarted = true; this.restarts = (this.restarts || 0) + 1;
+      }
       // Pickups: a reader who stumbles usually starts the phrase or sentence again. If the words fit a restart
       // clearly better than continuing, follow the restart.
-      if (r && h.length <= 16) {
+      if (r && !restarted && h.length <= 16) {
         for (const st of this.restartPoints(this.anchor)) {
           const r2 = align(this.m.units, st, h);
           if (r2 && r2.first >= 0 && r2.first <= st + 2 && r2.matches >= 3 && r2.score > r.score + 1.0) {

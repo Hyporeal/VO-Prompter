@@ -34,8 +34,19 @@ const req = (r) => new Promise((resolve, reject) => { r.onsuccess = () => resolv
 
 export async function listProjects() {
   const all = await tx('projects', 'readonly', (s) => req(s.getAll()));
-  return (all || []).map((p) => ({ id: p.id, name: p.name, updated: p.updated, hasVideo: !!p.videoName, videoName: p.videoName }))
-    .sort((a, b) => b.updated - a.updated);
+  return (all || []).map((p) => ({ id: p.id, name: p.name, fileName: p.fileName, updated: p.updated, opened: p.opened || p.updated, hasVideo: !!p.videoName, videoName: p.videoName,
+    progress: p.progress, bm: (p.bm || []).length, hl: (p.hl || []).length }))
+    .sort((a, b) => b.opened - a.opened);
+}
+// how many voice-over recordings each project has
+export async function voCounts() {
+  const out = new Map();
+  await tx('vo', 'readonly', (s) => new Promise((resolve) => {
+    const r = s.openCursor();
+    r.onsuccess = () => { const c = r.result; if (!c) { resolve(); return; } const id = c.value.projectId; out.set(id, (out.get(id) || 0) + 1); c.continue(); };
+    r.onerror = () => resolve();
+  }));
+  return out;
 }
 export const getProject = (id) => tx('projects', 'readonly', (s) => req(s.get(id)));
 export const putProject = (p) => tx('projects', 'readwrite', (s) => { s.put(p); });

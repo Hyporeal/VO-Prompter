@@ -50,6 +50,9 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
+/* Settings → Screen: interface size scales the bars, buttons and dialogs; interface text size scales their text.
+   The script has its own text size. */
+.bar, .subbar, .vctl, dialog, .notices, .back-pill { zoom: var(--zu, 1); font-size: calc(16px * var(--ut, 1)); }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 [hidden] { display: none !important; }
@@ -57,7 +60,7 @@ button { cursor: pointer; }
 /* Find and highlighter bars */
 .subbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px max(14px, env(safe-area-inset-right, 0px)) 6px max(14px, env(safe-area-inset-left, 0px)); border-bottom: 1px solid var(--rule); background: var(--surface); flex-shrink: 0; }
 .subbar input[type="search"] { flex: 1 1 160px; min-width: 120px; border: 1px solid var(--rule); background: var(--surface-2); border-radius: 9px; padding: 8px 12px; }
-.sub-note { color: var(--muted); font-size: 14px; flex: 0 1 auto; }
+.sub-note { color: var(--muted); font-size: .875em; flex: 0 1 auto; }
 .swatches { display: inline-flex; gap: 8px; }
 .sw { width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--rule); padding: 0; }
 .sw[data-c="y"] { background: rgb(255, 214, 10); } .sw[data-c="g"] { background: rgb(52, 211, 153); } .sw[data-c="b"] { background: rgb(96, 165, 250); }
@@ -65,7 +68,8 @@ button { cursor: pointer; }
 .sw.erase { background: var(--surface-2); color: var(--muted); font-size: 14px; }
 .sw[aria-pressed="true"] { border-color: var(--fg); box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--fg); }
 #btnHl[aria-pressed="true"], #btnMine[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-@media (max-width: 600px) { body:not(.desk) .bar { flex-wrap: wrap; row-gap: 6px; } body:not(.desk) .bar .title { order: 10; flex: 1 1 100px; } body:not(.desk) .mic { min-width: 0; } }
+.compact .bar { flex-wrap: wrap; row-gap: 6px; gap: 6px; } .compact .bar .title { order: 10; flex: 1 1 100px; } .compact .mic { min-width: 0; }
+.compact .seg button { padding: 8px 11px; } .compact .vctl { gap: 6px; } .compact .vctl .btn { min-width: 44px; padding: 0 10px; }
 
 /* Top bar */
 .bar {
@@ -73,7 +77,10 @@ button { cursor: pointer; }
   padding: 8px max(14px, env(safe-area-inset-right, 0px)) 8px max(14px, env(safe-area-inset-left, 0px));
   border-bottom: 1px solid var(--rule); background: var(--surface); flex-shrink: 0;
 }
-.title { color: var(--muted); flex: 1 1 0; min-width: 40px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.title { color: var(--muted); flex: 1 1 0; min-width: 40px; display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 6px 4px; border-radius: 8px; text-align: left; }
+.title #title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.title svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .7; }
+.title:hover { color: var(--fg); }
 .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 9px; overflow: hidden; flex-shrink: 0; }
 .seg button { border: 0; background: transparent; padding: 9px 15px; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); font-weight: 700; }
@@ -82,7 +89,7 @@ button { cursor: pointer; }
 a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 .btn.danger { color: var(--over); }
-.chip { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; padding: 5px 9px; border-radius: 7px; flex-shrink: 0; }
+.chip { font-size: .8125em; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; padding: 5px 9px; border-radius: 7px; flex-shrink: 0; }
 .chip.off { color: var(--muted); background: var(--surface-2); border: 1px solid var(--rule); font-weight: 400; opacity: .8; }
 .mic {
   display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; min-width: 132px; justify-content: center;
@@ -106,6 +113,8 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .doc { max-width: 940px; margin: 0 auto; }
 .doc::after { content: ""; display: block; height: 60vh; } /* lets the last lines scroll up to the top */
 .para { font-size: var(--script-size); line-height: 1.5; margin: 0 0 .62em; padding: 0 0 0 12px; border-left: 3px solid transparent; overflow-wrap: anywhere; }
+/* big changes at once (a jump, a mode or setting change) apply instantly; fades are for words changing as you read */
+.doc.snap .w, .doc.snap .g { transition: none !important; }
 .para.k-heading, .para.k-note, .para.k-marker, .para.k-skip, .para.k-end, .para.k-after-end {
   font-size: max(calc(var(--script-size) * .62), 11px); color: var(--muted); letter-spacing: .04em;
 }
@@ -141,6 +150,9 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .w.hl-p, .g.hl-p { background-image: linear-gradient(var(--hl-p), var(--hl-p)); }
 .w.hl-o, .g.hl-o { background-image: linear-gradient(var(--hl-o), var(--hl-o)); }
 .w.hl-start { outline: 2px dashed var(--fg); outline-offset: 2px; }
+/* a bookmark: a small bar just before the word (no change to the line) */
+.w.bm { position: relative; }
+.w.bm::before { content: ""; position: absolute; left: -5px; top: .18em; bottom: .12em; width: 3px; border-radius: 2px; background: var(--accent); }
 /* find */
 .w.found, .g.found { background-image: linear-gradient(rgba(150, 160, 255, .30), rgba(150, 160, 255, .30)); border-radius: 0; }
 .w.found-cur, .g.found-cur { background-image: linear-gradient(rgba(120, 190, 255, .65), rgba(120, 190, 255, .65)); border-radius: 0; }
@@ -183,25 +195,49 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .vctl .btn { height: 44px; min-width: 52px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .vctl .btn svg { width: 20px; height: 20px; }
 .vctl .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-.vtime { font-family: var(--font-num); font-size: 14px; color: var(--muted); white-space: nowrap; flex: 1 1 auto; text-align: center; }
+.vtime { font-family: var(--font-num); font-size: .875em; color: var(--muted); white-space: nowrap; flex: 1 1 auto; text-align: center; }
 .no-video .grip, .no-video .side { display: none; }
 
+/* Contents */
+.toc-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.toc-list { display: grid; gap: 2px; }
+.toc-row { display: flex; align-items: center; gap: 6px; border-radius: 9px; }
+.toc-row.here { background: var(--sel); }
+.toc-go { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left; border: 0; background: transparent; padding: 9px 8px; border-radius: 9px; }
+.toc-go:hover { background: var(--surface-2); }
+.toc-ic { flex: 0 0 22px; display: inline-grid; place-items: center; color: var(--muted); font-size: .9em; }
+.toc-row.k-section .toc-lb { font-weight: 700; letter-spacing: .02em; }
+.toc-row.k-bm .toc-ic { color: var(--accent); }
+.toc-lb { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toc-row.k-hl .toc-lb, .toc-row.k-bm .toc-lb { color: var(--fg); }
+.toc-tm { font-family: var(--font-num); font-size: .8em; color: var(--muted); flex-shrink: 0; }
+.toc-sw { display: inline-flex; gap: 2px; }
+.toc-sw i { width: 6px; height: 16px; border-radius: 2px; display: block; }
+.toc-sw i.c-y { background: rgb(255, 214, 10); } .toc-sw i.c-g { background: rgb(52, 211, 153); } .toc-sw i.c-b { background: rgb(96, 165, 250); }
+.toc-sw i.c-p { background: rgb(244, 114, 182); } .toc-sw i.c-o { background: rgb(251, 146, 60); }
+.toc-act { border: 0; background: transparent; color: var(--muted); padding: 8px; border-radius: 8px; }
+.toc-act:hover { color: var(--fg); background: var(--surface-2); }
+.toc-row input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--accent); background: var(--surface-2); border-radius: 8px; padding: 7px 10px; }
+.toc-empty { color: var(--muted); padding: 8px; }
+.proj-item .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.proj-item input { width: 100%; border: 1px solid var(--accent); background: var(--surface-2); border-radius: 8px; padding: 7px 10px; }
+
 /* Dialogs */
-dialog { border: 1px solid var(--rule); border-radius: 14px; background: var(--surface); color: var(--fg); padding: 0; width: min(680px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); }
+dialog { border: 1px solid var(--rule); border-radius: 14px; background: var(--surface); color: var(--fg); padding: 0; width: min(680px, calc((100vw - 32px) / var(--zu, 1))); max-height: calc((100dvh - 48px) / var(--zu, 1)); }
 dialog::backdrop { background: rgba(0,0,0,.55); }
 .dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--surface); z-index: 1; }
-.dlg-head h2 { margin: 0; font-size: 20px; }
+.dlg-head h2 { margin: 0; font-size: 1.25em; }
 .dlg-body { padding: 16px 18px 22px; display: grid; gap: 18px; }
 fieldset { border: 1px solid var(--rule); border-radius: 10px; margin: 0; padding: 12px 14px 14px; display: grid; gap: 12px; }
-legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing: .06em; text-transform: uppercase; }
 .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; }
 .row small { grid-column: 1 / -1; color: var(--muted); }
 .row input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); touch-action: pan-y; }
 .row output { font-family: var(--font-num); }
 .row select { background: var(--surface-2); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; max-width: 280px; }
-.size-preview { grid-column: 1 / -1; background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: var(--script-size); line-height: 1.45; }
+.size-preview { zoom: calc(1 / var(--zu, 1)); grid-column: 1 / -1; background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: var(--script-size); line-height: 1.45; }
 .btns { display: flex; gap: 8px; flex-wrap: wrap; }
-.note { color: var(--muted); font-size: 14px; margin: 0; }
+.note { color: var(--muted); font-size: .875em; margin: 0; }
 .proj-list { display: grid; gap: 8px; }
 .proj-item { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; }
 .proj-item.current { border-color: var(--accent); }
@@ -214,10 +250,6 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
 .toast { background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-weight: 700; max-width: calc(100vw - 32px); box-shadow: 0 6px 24px rgba(0,0,0,.35); pointer-events: auto; }
 .gone { max-width: 600px; margin: 12vh auto; padding: 0 20px; display: grid; gap: 14px; }
 .gone ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
-@media (max-width: 720px) {
-  body:not(.desk) .bar { gap: 6px; flex-wrap: wrap; } body:not(.desk) .seg button { padding: 8px 11px; } body:not(.desk) .mic { min-width: 0; }
-  body:not(.desk) .vctl { gap: 6px; } body:not(.desk) .vctl .btn { min-width: 44px; padding: 0 10px; }
-}
 @media (prefers-reduced-motion: reduce) { .mic .dot { transition: none; } }
 </style>
 </head>
@@ -228,11 +260,14 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     <button id="mListen" aria-pressed="false">Listen</button>
     <button id="mEdit" aria-pressed="false">Edit</button>
   </div>
-  <span class="title" id="title">No script open</span>
+  <button class="title" id="btnProject" title="Projects: switch, rename or start a new one"><span id="title">No project open</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
   <span class="chip off" id="offScript" hidden>Off script</span>
   <button class="mic" id="btnMic" aria-pressed="false"><span class="dot" id="micDot"></span><span id="micLbl">Start</span></button>
   <button class="mic speak" id="btnSpeak" hidden><span id="speakLbl">Read aloud</span></button>
   <button class="btn" id="btnMine" hidden aria-pressed="true" title="Play your own voice-over where you've added one">My VO</button>
+  <button class="btn icon-btn" id="btnToc" aria-label="Contents" title="Contents: sections, bookmarks and highlights">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg>
+  </button>
   <button class="btn icon-btn" id="btnFind" aria-label="Find in script" title="Find in script">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
   </button>
@@ -288,7 +323,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
 </div>
 </div>
 
-<input type="file" id="fileScript" accept=".docx,.txt,.md,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" hidden>
+<input type="file" id="fileScript" accept=".docx,.txt,.md,.markdown,.text,.epub,.odt,.rtf,.pdf,.html,.htm,.xhtml,.srt,.vtt,.fountain,.fdx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,application/vnd.oasis.opendocument.text,application/rtf,text/rtf,application/pdf,text/html,text/plain,text/markdown" hidden>
+<input type="file" id="fileUpdate" accept=".docx,.txt,.md,.markdown,.text,.epub,.odt,.rtf,.pdf,.html,.htm,.xhtml,.srt,.vtt,.fountain,.fdx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,application/vnd.oasis.opendocument.text,application/rtf,text/rtf,application/pdf,text/html,text/plain,text/markdown" hidden>
 <input type="file" id="fileVo" accept="audio/*,video/mp4,.m4a,.mp3,.wav,.aac,.ogg,.opus,.webm,.flac" hidden>
 <input type="file" id="fileVideo" accept="video/*,.mp4,.m4v,.mov,.webm" hidden>
 
@@ -296,9 +332,10 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
   <div class="dlg-head"><h2>Files</h2><button class="btn" data-close>Close</button></div>
   <div class="dlg-body">
     <fieldset>
-      <legend>This script</legend>
+      <legend>This project</legend>
       <div class="btns">
-        <button class="btn primary" id="fOpenScript">Open a script…</button>
+        <button class="btn primary" id="fOpenScript">New project…</button>
+        <button class="btn" id="fProjects">All projects…</button>
         <button class="btn" id="fOpenVideo">Add video…</button>
         <button class="btn danger" id="fRemoveVideo" hidden>Remove video</button>
       </div>
@@ -308,10 +345,6 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
         <button class="btn" id="fExportTxt">Export (.txt)</button>
         <button class="btn" id="fClearMarks">Clear read marks</button>
       </div>
-    </fieldset>
-    <fieldset>
-      <legend>Scripts on this device</legend>
-      <div class="proj-list" id="projList"></div>
     </fieldset>
     <fieldset>
       <legend>My voice-over</legend>
@@ -344,10 +377,18 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
       <div class="row"><label for="selAbove">Lines kept above</label><select id="selAbove"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select></div>
       <div class="row"><label for="selEvery">Scroll every</label><select id="selEvery"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option><option value="5">5 lines</option><option value="s1">1 sentence</option><option value="s2">2 sentences</option><option value="s3">3 sentences</option></select>
         <small>The page waits until you've read this many lines or sentences before it moves. With sentences, the new sentence moves to your reading position; a sentence too long to fit still scrolls before you run out of room.</small></div>
-      <div class="row"><label for="selScrollStyle">Scroll style</label><select id="selScrollStyle"><option value="pause">At a pause in your reading</option><option value="step">Right away</option><option value="slow">Slow and steady</option></select>
-        <small>At a pause: moves only in a break between words, unless you run out of room. Slow and steady: drifts up gently instead of stepping.</small></div>
+      <div class="row"><label for="selScrollStyle">Scroll style</label><select id="selScrollStyle"><option value="pause">At a pause in your reading</option><option value="step">Right away</option><option value="slow">Slow and steady</option><option value="flow">Continuous (for flowing reads)</option></select>
+        <small>At a pause: moves only in a break between words. Slow and steady: drifts up gently instead of stepping. These two move every few lines or sentences (Scroll every), and always keep a couple of lines ahead in view. Continuous: the line you're reading stays at the reading position and the text moves up smoothly at your pace, like a teleprompter, so the next lines keep coming; best for long flowing reads such as audiobooks (Scroll every doesn't apply).</small></div>
       <div class="row"><label for="selRate">Video speed label</label><select id="selRate"><option value="off">Off</option><option value="on">On</option></select></div>
       <div class="row"><label for="selTheme">Theme</label><select id="selTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">Match the device</option></select></div>
+    </fieldset>
+    <fieldset>
+      <legend>Screen</legend>
+      <div class="row"><label for="selView">Layout</label><select id="selView"><option value="auto">Automatic</option><option value="phone">Phone</option><option value="tablet">Tablet</option><option value="desktop">Desktop</option></select>
+        <small id="viewNote"></small></div>
+      <div class="row"><label for="sUi">Interface size</label><output id="oUi"></output><input type="range" id="sUi" min="70" max="160" step="5"></div>
+      <div class="row"><label for="sUiText">Interface text size</label><output id="oUiText"></output><input type="range" id="sUiText" min="80" max="160" step="5">
+        <small>Interface size scales the bars, buttons and these panels; interface text size scales their text only. The script keeps its own text size (above). Both apply when you let go of the slider.</small></div>
     </fieldset>
     <fieldset>
       <legend>Following your voice</legend>
@@ -373,7 +414,6 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
     <fieldset>
       <legend>App</legend>
       <p class="note" id="aboutLine"></p>
-      <div class="row"><label for="chkDesk">Desktop view</label><input type="checkbox" id="chkDesk"></div>
       <div class="row"><label for="selDebug">Debug log</label><select id="selDebug"><option value="off">Off</option><option value="on">On</option></select>
         <small>While on, the app notes what voices, video and the speech engine do, with times, so a problem can be traced. Turn it on, reproduce the problem, then Copy debug log and paste it into a message. No script words, file names or account details are logged.</small></div>
       <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><button class="btn" id="btnDbg" hidden>Copy debug log</button><a class="btn" href="THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Licenses</a></div>
@@ -382,6 +422,34 @@ legend { padding: 0 6px; color: var(--muted); font-size: 13px; letter-spacing: .
       <p class="note">Removes all scripts, videos, settings and the speech model from this device, then shows how to remove the icon.</p>
     </fieldset>
   </div>
+</dialog>
+
+<dialog id="dlgToc">
+  <div class="dlg-head"><h2>Contents</h2><button class="btn" data-close>Close</button></div>
+  <div class="dlg-body">
+    <div class="toc-tools">
+      <div class="seg" role="group" aria-label="Show">
+        <button data-f="all" aria-pressed="true">All</button><button data-f="section" aria-pressed="false">Sections</button><button data-f="bm" aria-pressed="false">Bookmarks</button><button data-f="hl" aria-pressed="false">Highlights</button>
+      </div>
+      <button class="btn" id="tocAddBm">Bookmark this spot</button>
+    </div>
+    <div class="toc-list" id="tocList"></div>
+    <p class="note">Sections are headings, marker lines (like START SESSION 02) and bracketed directions that start with a capital (like [SLIDE: …] or [SYSTEM]). Highlights that touch count as one, across colours and sentences. Tap one to go there; the video follows.</p>
+  </div>
+</dialog>
+
+<dialog id="dlgProjects">
+  <div class="dlg-head"><h2>Projects</h2><button class="btn" data-close>Close</button></div>
+  <div class="dlg-body">
+    <div class="btns"><button class="btn primary" id="pNew">New project from a script…</button><button class="btn" id="pUpdate">Update this project's script…</button></div>
+    <p class="note">A project keeps its script, video, voice-over, highlights, bookmarks and reading spot. Switching saves where you are. Update this project's script brings in a newer version of the file and keeps what still matches.</p>
+    <div class="proj-list" id="projList"></div>
+  </div>
+</dialog>
+
+<dialog id="dlgChoice">
+  <div class="dlg-head"><h2 id="chTitle">Choose</h2></div>
+  <div class="dlg-body"><p class="note" id="chText"></p><div class="btns" id="chBtns"></div></div>
 </dialog>
 
 <dialog id="dlgConfirm">

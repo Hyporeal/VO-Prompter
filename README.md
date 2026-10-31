@@ -16,6 +16,13 @@ Open it at **https://hyporeal.github.io/VO-Prompter/** in Chrome on the tablet, 
 - **Highlighter** (pen): pick a colour, tap the first word, then the last. The highlight is one continuous bar, saved with the script. The ✕ eraser removes a highlight you tap.
 - **My voice-over**: **Files → My voice-over → Add a recording** (WAV, MP3 or M4A of your finished read). The app finds every script word in it on this device (nothing is uploaded; a long recording takes a few minutes). In Listen mode, **My VO** plays your recording for each sentence it covers, with the guide following, and the chosen voice reads anything it doesn't cover. Add more recordings later (a pickup session, say): newer ones replace older ones where they overlap.
 
+## Projects and contents
+
+- **Projects** (tap the title in the top bar): each project keeps its script, video, voice-over, highlights, bookmarks and reading spot. Switch, rename or delete; switching saves where you are. **Update this project's script** brings in a newer version of the file and keeps what still matches. Opening a file with the same name as a project asks first.
+- **Contents** (list button): headings, marker lines (START SESSION 02), bracketed directions that start with a capital ([SLIDE: …], [SYSTEM]), your bookmarks, and your highlights (touching highlights count as one). Tap one to go there. **Bookmark this spot** adds a bookmark.
+- **Opens**: Word, PDF, EPUB, OpenDocument, RTF, web pages, subtitles (SRT/VTT, each line keeps its time), Final Draft, Fountain, Markdown and text. Old .doc files need saving as .docx.
+- Long books stay quick: only the paragraphs near the screen are drawn.
+
 ## Video
 
 - **Files → Add video** stores the video on the tablet with the script.
@@ -46,6 +53,8 @@ Without timestamps, the video is spread evenly across the whole script.
 - **Scroll every**: 1 to 5 lines, or 1 to 3 sentences (default 2 lines). With sentences, when you reach the next one it moves to your reading position, keeping the sentence you're reading (and the next, if there's room) in view; a sentence too long to fit still scrolls before you run out of room. It only scrolls back up if the reading line leaves the top of the screen.
 - **Scroll style**: at a pause in your reading (default: moves only in a break between words, unless you run out of room), right away, or slow and steady (drifts up gently). The page follows a reading spot that has held for a moment, so a spot that flickers ahead never moves it.
 - **Video speed label**: off by default.
+- **Scroll style → Continuous**: your line stays put and the text rises at your pace (for audiobooks). Every style keeps a couple of lines ahead in view.
+- **Screen**: Layout (Automatic, Phone, Tablet, Desktop), interface size and interface text size.
 - Read words, highlights and the guide fade in and out instead of switching instantly.
 - **Mark strength**: faint (default), medium or strong for skipped-word and misread marks.
 - **Guide style**: underline or fill the letters.

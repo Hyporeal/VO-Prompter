@@ -6,7 +6,7 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
-import { canConvert, planQuick, encodePiece, joinPieces, measure as measureConv } from './convert.js';
+import { canConvert, planQuick, encodePiece, checkPiece, joinPieces, measure as measureConv } from './convert.js';
 
 const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
@@ -1276,7 +1276,11 @@ async function loadProject(p) {
   if (p.videoName) {
     try { const v = await store.getVideo(p.id); if (v && v.blob) setVideoSrc(v.blob); } catch (e) { /* missing */ }
     if (!hasVideo()) toast('The video for this project isn’t on this device anymore. Add it again in Files.');
-    else if (p.quickJob && !conv) toast(`Preparing the video is paused (${p.quickJob.done} of ${p.quickJob.bounds.length - 1} pieces saved). Files → Resume carries on.`, 6000);
+    else if (p.quickJob && !conv) {
+      const q = p.quickJob, n = q.bounds.length - 1;
+      if (q.paused) toast(`Preparing the video is paused (${q.done} of ${n} pieces saved). Files → Resume carries on.`, 6000);
+      else if (canConvert()) { toast(`Carrying on preparing the video (${q.done} of ${n} pieces saved).`, 4000); setTimeout(() => { if (project && project.id === p.id && project.quickJob && !conv) startQuick(); }, 1500); }
+    }
   }
   requestAnimationFrame(() => { syncStable(); settleScroll(currentEl()); });
   try { await store.putProject(project); } catch (e) { /* storage full */ }
@@ -2056,6 +2060,7 @@ async function editProj(pid, fn) {
   const p = await store.getProject(pid); if (p) { fn(p); await store.putProject(p); }
 }
 const fmtLeft = (s) => { if (!isFinite(s)) return ''; const m = Math.max(1, Math.round(s / 60)); return m >= 90 ? `about ${Math.floor(m / 60)} h ${m % 60} min` : `about ${m} min`; };
+const STALL = 15000, STALL_BACK = 6000; // ms without progress before a piece is restarted; less after coming back to the app
 const JOIN = 0.005; // joining takes about this many seconds per second of video
 // estimated seconds for a whole run of a mode, from the sample timed on this device
 function estFor(p, mode) {
@@ -2101,9 +2106,11 @@ async function startQuick(mode) {
   if (!job || job.key !== key || (mode && job.mode !== mode)) {
     await store.deletePieces(pid);
     let plan; try { plan = await planQuick(rec.blob); } catch (e) { toast('Couldn’t read the video: ' + (e.message || e), 6000); return; }
-    job = { key, mode: mode || 'std', bounds: plan.bounds, done: 0, spent: 0, vdone: 0 };
+    job = { key, mode: mode || 'std', bounds: plan.bounds, done: 0, spent: 0, vdone: 0, redo: 0 };
     await editProj(pid, (p) => { p.quickJob = job; });
   }
+  job.redo = 0;
+  if (job.paused) { delete job.paused; await editProj(pid, (p) => { p.quickJob = job; }); }
   const ac = new AbortController();
   conv = { ac, pid, job };
   const n = job.bounds.length - 1, dur = job.bounds[n];
@@ -2119,16 +2126,28 @@ async function startQuick(mode) {
   try {
     for (let i = job.done; i < n; i++) {
       upd(i, 0);
-      const t = performance.now();
-      let blob;
-      for (let tries = 0; ; tries++) {
-        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { signal: ac.signal, onProgress: (f) => upd(i, f) }); break; }
+      let blob, t, errors = 0;
+      for (;;) {
+        // a piece that stops making progress (Android can take the encoder away from a page in the background
+        // without an error) is started again once the app is in front
+        const inner = new AbortController(), onStop = () => inner.abort();
+        ac.signal.addEventListener('abort', onStop, { once: true });
+        let last = performance.now(), stalled = false;
+        const onVis = () => { if (!document.hidden) last = performance.now() - (STALL - STALL_BACK); };
+        document.addEventListener('visibilitychange', onVis);
+        const dog = setInterval(() => { if (!document.hidden && performance.now() - last > STALL) { stalled = true; inner.abort(); } }, 1000);
+        t = performance.now();
+        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { signal: inner.signal, onProgress: (f) => { last = performance.now(); upd(i, f); } }); break; }
         catch (e) {
-          if (ac.signal.aborted || tries >= 3) throw e;
+          if (ac.signal.aborted) throw e;
+          if (stalled) { dbg('video', `piece ${i + 1} stalled, starting it again`); show(`Starting piece ${i + 1} of ${n} again…`); continue; }
+          if (++errors > 3) throw e;
           dbg('video', `piece ${i + 1} failed (${e.name || 'error'}), trying again`);
           await whenVisible();
-        }
+        } finally { clearInterval(dog); document.removeEventListener('visibilitychange', onVis); ac.signal.removeEventListener('abort', onStop); }
       }
+      const chk = await checkPiece(rec.blob, blob, job.bounds[i], job.bounds[i + 1]).catch(() => ({ ok: true }));
+      if (!chk.ok) { dbg('video', `piece ${i + 1} came out short (${chk.got} of ${chk.want} pictures), making it again`); if (++job.redo > 6) throw new Error('pieces keep coming out short'); i--; continue; }
       await store.putPiece(pid, i, blob);
       job.done = i + 1; job.spent += (performance.now() - t) / 1000; job.vdone += job.bounds[i + 1] - job.bounds[i];
       await editProj(pid, (p) => { p.quickJob = job; });
@@ -2149,7 +2168,10 @@ async function startQuick(mode) {
     if (project && project.id === pid) { const t = video.currentTime, play = !video.paused; setVideoSrc(file); video.addEventListener('loadedmetadata', () => { video.currentTime = t; if (play) video.play().catch(() => {}); }, { once: true }); }
     toast(`Video ready: jumps are quick now (${Math.round(out.size / 1048576)} MB${job.spent > 60 ? `, ${Math.round(job.spent / 60)} min of work` : ''}).`, 6000);
   } catch (e) {
-    if (ac.signal.aborted) toast(`Paused with ${job.done} of ${n} pieces saved. Files → Resume carries on from there.`, 6000);
+    if (ac.signal.aborted) {
+      if (!conv.discard) { job.paused = true; await editProj(pid, (p) => { if (p.quickJob) p.quickJob.paused = true; }).catch(() => {}); }
+      toast(conv.discard ? 'Discarded. The video is as it was.' : `Paused with ${job.done} of ${n} pieces saved. Files → Resume carries on from there.`, 6000);
+    }
     else { noteError('quick copy: ' + (e.message || e)); toast('Couldn’t prepare the video: ' + (e.message || e) + (job.done ? `. ${job.done} of ${n} pieces are saved; Files → Resume tries again.` : ''), 8000); }
   } finally {
     conv = null; $('#convPill').hidden = true; $('#blackout').hidden = true; wantAwake();
@@ -2159,14 +2181,14 @@ async function startQuick(mode) {
 async function discardQuick() {
   if (!project) return;
   const pid = project.id;
-  if (conv && conv.pid === pid) conv.ac.abort();
+  if (conv && conv.pid === pid) { conv.discard = true; conv.ac.abort(); }
   await store.deletePieces(pid);
   await editProj(pid, (p) => { delete p.quickJob; });
   renderFiles();
 }
 // a new or removed video makes any preparation, sample timing or "prepared" mark stale
 async function resetQuick(pid) {
-  if (conv && conv.pid === pid) conv.ac.abort();
+  if (conv && conv.pid === pid) { conv.discard = true; conv.ac.abort(); }
   if (measuring && measuring.pid === pid) measuring.ac.abort();
   await store.deletePieces(pid).catch(() => {});
   await editProj(pid, (p) => { delete p.quickJob; delete p.quickEst; delete p.videoQuick; });

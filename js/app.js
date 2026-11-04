@@ -11,11 +11,11 @@ const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
 
 // Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
-// the guide, more overlap, slow and steady scrolling one sentence at a time).
+// the guide, more overlap, continuous scrolling).
 const DEFAULTS = {
   textSize: 18, said: 'sent', guide: 'fill', span: 'sentence', overlap: 'more', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'all',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'slow', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'flow', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
   view: 'auto', uiScale: 100, uiText: 100,
 };
 const settings = store.loadSettings(DEFAULTS);

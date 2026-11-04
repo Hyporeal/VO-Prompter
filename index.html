@@ -43,6 +43,8 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+/* taps act at once: no wait to see whether it's a double-tap zoom (pinch zoom still works) */
+html { touch-action: manipulation; }
 body {
   background: var(--bg); color: var(--fg); font: 16px/1.4 var(--font-ui);
   padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);

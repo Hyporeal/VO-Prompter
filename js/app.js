@@ -2105,7 +2105,7 @@ async function startQuick(mode) {
   if (!rec || !rec.blob) { toast('The video isn’t on this device.'); return; }
   const key = vidKey(rec);
   let job = project.quickJob;
-  if (job && job.path !== QPATH) { ql(`pieces from an older version (${job.done}) discarded`); job = null; }
+  if (job && job.path !== QPATH) { ql(`pieces from an older version (${job.done}) discarded`); mode = mode || job.mode; job = null; }
   if (!job || job.key !== key || (mode && job.mode !== mode)) {
     await store.deletePieces(pid);
     let plan; try { plan = await planQuick(rec.blob); } catch (e) { toast('Couldn’t read the video: ' + (e.message || e), 6000); return; }

@@ -6,9 +6,9 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
-import { canConvert, planQuick, encodePiece, checkPiece, joinPieces, measure as measureConv } from './convert.js';
+import { canConvert, PATH as QPATH, planQuick, encodePiece, checkPiece, joinPieces, measure as measureConv } from './convert.js';
 
-const VERSION = '1.1.36 beta';
+const VERSION = '1.1.37 beta';
 const $ = (s) => document.querySelector(s);
 
 // Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
@@ -2066,7 +2066,7 @@ const STALL = 15000, STALL_BACK = 6000; // ms without progress before a piece is
 const JOIN = 0.005; // joining takes about this many seconds per second of video
 // estimated seconds for a whole run of a mode, from the sample timed on this device
 function estFor(p, mode) {
-  const e = p.quickEst && p.quickEst.m && p.quickEst.m[mode];
+  const e = p.quickEst && p.quickEst.path === QPATH && p.quickEst.m && p.quickEst.m[mode];
   if (!e) return null;
   return { secs: p.quickEst.n * e.perPiece + p.quickEst.dur * (e.perSec + JOIN), mb: e.bytesPerSec * p.quickEst.dur / 1048576 };
 }
@@ -2082,13 +2082,13 @@ async function measureQuick() {
   let rec; try { rec = await store.getVideo(pid); } catch (e) { /* missing */ }
   if (!rec || !rec.blob) return;
   const key = vidKey(rec);
-  if (project.quickEst && project.quickEst.key === key) return;
+  if (project.quickEst && project.quickEst.key === key && project.quickEst.path === QPATH) return;
   measuring = { ac: new AbortController(), pid };
   renderFiles();
   try {
     const plan = await planQuick(rec.blob);
     const m = await measureConv(rec.blob, plan, ['std', 'sharp'], measuring.ac.signal);
-    await editProj(pid, (p) => { p.quickEst = { key, dur: plan.dur, n: plan.bounds.length - 1, m }; });
+    await editProj(pid, (p) => { p.quickEst = { key, path: QPATH, dur: plan.dur, n: plan.bounds.length - 1, m }; });
   } catch (e) { if (!measuring.ac.signal.aborted) dbg('video', 'sample timing failed: ' + (e.name || 'error')); }
   finally { measuring = null; if ($('#dlgFiles').open) renderFiles(); }
 }
@@ -2105,10 +2105,11 @@ async function startQuick(mode) {
   if (!rec || !rec.blob) { toast('The video isn’t on this device.'); return; }
   const key = vidKey(rec);
   let job = project.quickJob;
+  if (job && job.path !== QPATH) { ql(`pieces from an older version (${job.done}) discarded`); job = null; }
   if (!job || job.key !== key || (mode && job.mode !== mode)) {
     await store.deletePieces(pid);
     let plan; try { plan = await planQuick(rec.blob); } catch (e) { toast('Couldn’t read the video: ' + (e.message || e), 6000); return; }
-    job = { key, mode: mode || 'std', bounds: plan.bounds, done: 0, spent: 0, vdone: 0, redo: 0 };
+    job = { key, path: QPATH, mode: mode || 'std', bounds: plan.bounds, done: 0, spent: 0, vdone: 0, redo: 0 };
     await editProj(pid, (p) => { p.quickJob = job; });
   }
   job.redo = 0;
@@ -2129,14 +2130,14 @@ async function startQuick(mode) {
   try {
     for (let i = job.done; i < n; i++) {
       upd(i, 0);
-      let blob, t, errors = 0;
+      let blob, t, errors = 0, stalls = 0;
       for (;;) {
         // a piece that stops making progress (Android can take the encoder away from a page in the background
         // without an error) is started again once the app is in front
         const inner = new AbortController(), onStop = () => inner.abort();
         ac.signal.addEventListener('abort', onStop, { once: true });
         let last = performance.now(), stalled = false;
-        const onVis = () => { ql(document.hidden ? 'app went to background' : 'app back in front'); if (!document.hidden) last = performance.now() - (STALL - STALL_BACK); };
+        const onVis = () => { ql(document.hidden ? 'app went to background' : 'app back in front'); if (document.hidden) stalls = Math.max(0, stalls - 1); if (!document.hidden) last = performance.now() - (STALL - STALL_BACK); };
         document.addEventListener('visibilitychange', onVis);
         const dog = setInterval(() => { if (!document.hidden && performance.now() - last > STALL) { stalled = true; inner.abort(); } }, 1000);
         t = performance.now(); ql(`piece ${i + 1}/${n} start ${job.bounds[i].toFixed(1)}-${job.bounds[i + 1].toFixed(1)}s ${job.mode}${errors ? ' retry ' + errors : ''}${document.hidden ? ' (hidden)' : ''}`);
@@ -2144,6 +2145,7 @@ async function startQuick(mode) {
         try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { signal: inner.signal, onProgress: (f) => { last = performance.now(); lastF = f; upd(i, f); } }); ql(`piece ${i + 1} encoded in ${((performance.now() - t) / 1000).toFixed(0)}s, ${(blob.size / 1048576).toFixed(1)} MB`); break; }
         catch (e) {
           if (ac.signal.aborted) throw e;
+          if (stalled && ++stalls > 4) { const at = job.bounds[i] + lastF * (job.bounds[i + 1] - job.bounds[i]); throw new Error(`this device’s encoder keeps getting stuck at ${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')} in the video`); }
           if (stalled) { ql(`piece ${i + 1} stalled at ${Math.round(lastF * 100)}%, starting again`); show(`Starting piece ${i + 1} of ${n} again…`); continue; }
           if (++errors > 3) throw e;
           ql(`piece ${i + 1} failed at ${Math.round(lastF * 100)}%: ${e.name || 'error'} ${String(e.message || '').slice(0, 80)}`);
@@ -2231,7 +2233,7 @@ function renderQuick() {
   else if (measuring) note = 'Timing a short sample on this device for the estimates…';
   $('#fQuickNote').textContent = note;
   $('#fQuickNote').hidden = !note;
-  if (!job && !prepared && !p.quickEst && !conv) measureQuick();
+  if (!job && !prepared && (!p.quickEst || p.quickEst.path !== QPATH) && !conv) measureQuick();
 }
 
 function renderFiles() {

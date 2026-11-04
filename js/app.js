@@ -6,7 +6,6 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
-import { canConvert, PATH as QPATH, planQuick, softDecodeSupported, encodePiece, checkPiece, joinPieces, measure as measureConv } from './convert.js';
 
 const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
@@ -21,7 +20,18 @@ const DEFAULTS = {
 };
 const settings = store.loadSettings(DEFAULTS);
 if (settings.desktop && (!settings.view || settings.view === 'auto') && !settings.viewSet) settings.view = 'desktop'; // the 1.1.28 checkbox
-if (settings.guide === 'off') { settings.guide = 'under'; settings.span = 'off'; }
+if (settings.guide === 'off') settings.span = 'off';
+// options removed in 1.1.40: map each to the nearest one left
+{
+  const was = JSON.stringify(settings);
+  settings.guide = 'fill';
+  if (settings.said === 'hl') settings.said = 'dim';
+  if (settings.said === 'sent2') settings.said = 'sent';
+  if (settings.span === 'word' || settings.span === 'phrase') settings.span = 'line';
+  if (settings.overlap !== 'some' && settings.overlap !== 'more') settings.overlap = 'some';
+  if (settings.scrollStyle === 'pause' || settings.scrollStyle === 'step') settings.scrollStyle = 'slow';
+  if (JSON.stringify(settings) !== was) store.saveSettings(settings);
+}
 if (settings.voiceURI !== undefined) { settings.ttsVoice = 'android:' + settings.voiceURI; delete settings.voiceURI; }
 const saveSettings = () => store.saveSettings(settings);
 
@@ -123,7 +133,7 @@ async function syncWake() {
   } catch (e) { /* not allowed right now; tried again shortly */ }
   finally { wakeBusy = false; }
 }
-const wantAwake = () => { wakeWanted = !!conv || listening || ttsBusy() || (hasVideo() && !video.paused) || (hasVideo() && follow && (listening || !!tts)); syncWake(); };
+const wantAwake = () => { wakeWanted = listening || ttsBusy() || (hasVideo() && !video.paused) || (hasVideo() && follow && (listening || !!tts)); syncWake(); };
 
 // ---------- settings → page ----------
 function applySettings() {
@@ -376,8 +386,7 @@ function lineRange(t) {
 // Guide overlap. The recognizer reports each word about half a second after you say it, so while you're
 // reading, the guide also covers the word it just heard and the next few: the word you're saying stays inside
 // it. Line, sentence and paragraph guides take in the next one as you reach the last words of the current one.
-// "None" is the exact single spot (with a small lead), as before.
-const OVERLAP = { some: { back: 2, fwd: 4, next: 2 }, more: { back: 2, fwd: 6, next: 3 } };
+const OVERLAP = { some: { back: 2, fwd: 6, next: 3 }, more: { back: 2, fwd: 8, next: 5 } }; // 1.1.40: A little is the old More
 function guideRange() {
   if (mode !== 'read' || settings.span === 'off' || !model || follower.pos >= model.N) return [-1, -1];
   const { tokens, units } = model;
@@ -1276,12 +1285,9 @@ async function loadProject(p) {
   if (p.videoName) {
     try { const v = await store.getVideo(p.id); if (v && v.blob) setVideoSrc(v.blob); } catch (e) { /* missing */ }
     if (!hasVideo()) toast('The video for this project isn’t on this device anymore. Add it again in Files.');
-    else if (p.quickJob && !conv) {
-      const q = p.quickJob, n = q.bounds.length - 1;
-      if (q.paused) toast(`Preparing the video is paused (${q.done} of ${n} pieces saved). Files → Resume carries on.`, 6000);
-      else if (canConvert()) { toast(`Carrying on preparing the video (${q.done} of ${n} pieces saved).`, 4000); setTimeout(() => { if (project && project.id === p.id && project.quickJob && !conv) startQuick(); }, 1500); }
-    }
   }
+  // leftovers of the video preparation tried in betas 1.1.33–1.1.39: saved pieces and timings
+  if (p.quickJob || p.quickEst) { delete p.quickJob; delete p.quickEst; store.deletePieces(p.id).catch(() => {}); }
   requestAnimationFrame(() => { syncStable(); settleScroll(currentEl()); });
   try { await store.putProject(project); } catch (e) { /* storage full */ }
 }
@@ -1398,7 +1404,6 @@ async function updateScript(file) {
 async function openVideoFile(file) {
   if (!project) { toast('Open a project first.'); return; }
   setVideoSrc(file);
-  await resetQuick(project.id);
   project.videoName = file.name;
   saveProject();
   try { await store.putVideo(project.id, file); }
@@ -2051,204 +2056,8 @@ async function renderTakes() {
 const takeSize = new Map();
 $('#fTakesAll').onclick = () => confirmDo('Delete all recordings?', 'Every saved recording and its log will be removed from this device.', 'Delete all', async () => { try { await caches.delete(TAKES); } catch (e) { /* ignore */ } renderTakes(); });
 
-// ---------- quick-jump copy of the video (made in pieces, so it can resume) ----------
-let conv = null; // the run: { ac, pid, job, lbl }
-let measuring = null; // { ac, pid }
-const vidKey = (rec) => `${rec.blob.size}|${rec.blob.lastModified || 0}|${rec.name}`;
-async function editProj(pid, fn) {
-  if (project && project.id === pid) { fn(project); await saveProject(); return; }
-  const p = await store.getProject(pid); if (p) { fn(p); await store.putProject(p); }
-}
-const fmtLeft = (s) => { if (!isFinite(s)) return ''; const m = Math.max(1, Math.round(s / 60)); return m >= 90 ? `about ${Math.floor(m / 60)} h ${m % 60} min` : `about ${m} min`; };
-const qlog = []; // video preparation steps, numbers only, for Copy diagnostics
-const ql = (m) => { qlog.push(`${new Date().toISOString().slice(11, 19)} ${m}`); if (qlog.length > 40) qlog.shift(); dbg('video', m); };
-const STALL = 15000, STALL_BACK = 6000; // ms without progress before a piece is restarted; less after coming back to the app
-const JOIN = 0.005; // joining takes about this many seconds per second of video
-// estimated seconds for a whole run of a mode, from the sample timed on this device
-function estFor(p, mode) {
-  const e = p.quickEst && p.quickEst.path === QPATH && p.quickEst.m && p.quickEst.m[mode];
-  if (!e) return null;
-  return { secs: p.quickEst.n * e.perPiece + p.quickEst.dur * (e.perSec + JOIN), mb: e.bytesPerSec * p.quickEst.dur / 1048576 };
-}
-// work seconds per second of video for a job: what it has actually taken so far, else the sample
-function jobRate(p, job) {
-  if (job.vdone >= 30 && job.spent > 0) return job.spent / job.vdone;
-  const e = p.quickEst && p.quickEst.m && p.quickEst.m[job.mode];
-  return e ? e.perSec + e.perPiece / 120 : null;
-}
-async function measureQuick() {
-  if (!project || !project.videoName || project.videoQuick || conv || measuring || !canConvert()) return;
-  const pid = project.id;
-  let rec; try { rec = await store.getVideo(pid); } catch (e) { /* missing */ }
-  if (!rec || !rec.blob) return;
-  const key = vidKey(rec);
-  if (project.quickEst && project.quickEst.key === key && project.quickEst.path === QPATH) return;
-  measuring = { ac: new AbortController(), pid };
-  renderFiles();
-  try {
-    const plan = await planQuick(rec.blob);
-    const m = await measureConv(rec.blob, plan, ['std', 'sharp'], measuring.ac.signal);
-    await editProj(pid, (p) => { p.quickEst = { key, path: QPATH, dur: plan.dur, n: plan.bounds.length - 1, m }; });
-  } catch (e) { if (!measuring.ac.signal.aborted) dbg('video', 'sample timing failed: ' + (e.name || 'error')); }
-  finally { measuring = null; if ($('#dlgFiles').open) renderFiles(); }
-}
-const whenVisible = () => new Promise((res) => {
-  if (!document.hidden) { setTimeout(res, 500); return; }
-  const f = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', f); setTimeout(res, 1000); } };
-  document.addEventListener('visibilitychange', f);
-});
-async function startQuick(mode) {
-  if (!project || !project.videoName || conv) return;
-  if (measuring) measuring.ac.abort();
-  const pid = project.id;
-  let rec; try { rec = await store.getVideo(pid); } catch (e) { /* missing */ }
-  if (!rec || !rec.blob) { toast('The video isn’t on this device.'); return; }
-  const key = vidKey(rec);
-  let job = project.quickJob;
-  if (job && job.path !== QPATH) { ql(`pieces from an older version (${job.done}) discarded`); mode = mode || job.mode; job = null; }
-  if (!job || job.key !== key || (mode && job.mode !== mode)) {
-    await store.deletePieces(pid);
-    let plan; try { plan = await planQuick(rec.blob); } catch (e) { toast('Couldn’t read the video: ' + (e.message || e), 6000); return; }
-    job = { key, path: QPATH, mode: mode || 'std', bounds: plan.bounds, done: 0, spent: 0, vdone: 0, redo: 0 };
-    await editProj(pid, (p) => { p.quickJob = job; });
-  }
-  job.redo = 0;
-  if (job.paused) { delete job.paused; await editProj(pid, (p) => { p.quickJob = job; }); }
-  const ac = new AbortController();
-  conv = { ac, pid, job };
-  ql(`run ${job.mode}: ${job.done}/${job.bounds.length - 1} done, video ${job.bounds[job.bounds.length - 1].toFixed(0)}s${navigator.deviceMemory ? ', device memory ' + navigator.deviceMemory + ' GB' : ''}`);
-  const n = job.bounds.length - 1, dur = job.bounds[n];
-  const show = (txt) => { $('#convLbl').textContent = txt; $('#blackLbl').textContent = txt; };
-  $('#convPill').hidden = false; wantAwake(); renderFiles();
-  const upd = (i, f) => {
-    const p = project && project.id === pid ? project : null;
-    const rate = jobRate(p || { quickEst: null }, job);
-    const piece = job.bounds[i + 1] - job.bounds[i], vdoneNow = job.vdone + piece * f;
-    const left = rate ? rate * (dur - vdoneNow) + dur * JOIN : NaN;
-    show(`Preparing video ${Math.floor(vdoneNow / dur * 100)}% · piece ${i + 1} of ${n}` + (isFinite(left) ? ` · ${fmtLeft(left)} left` : ''));
-  };
-  try {
-    for (let i = job.done; i < n; i++) {
-      upd(i, 0);
-      let blob, t, errors = 0, stalls = 0, soft = !!job.soft;
-      for (;;) {
-        // a piece that stops making progress (Android can take the encoder away from a page in the background
-        // without an error) is started again once the app is in front
-        const inner = new AbortController(), onStop = () => inner.abort();
-        ac.signal.addEventListener('abort', onStop, { once: true });
-        let last = performance.now(), stalled = false;
-        const onVis = () => { ql(document.hidden ? 'app went to background' : 'app back in front'); if (document.hidden) stalls = Math.max(0, stalls - 1); if (!document.hidden) last = performance.now() - (STALL - STALL_BACK); };
-        document.addEventListener('visibilitychange', onVis);
-        const dog = setInterval(() => { if (!document.hidden && performance.now() - last > STALL) { stalled = true; inner.abort(); } }, 1000);
-        t = performance.now(); ql(`piece ${i + 1}/${n} start ${job.bounds[i].toFixed(1)}-${job.bounds[i + 1].toFixed(1)}s ${job.mode}${soft ? ' software' : ''}${errors ? ' retry ' + errors : ''}${document.hidden ? ' (hidden)' : ''}`);
-        let lastF = 0;
-        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { soft, signal: inner.signal, onProgress: (f) => { last = performance.now(); lastF = f; upd(i, f); } }); ql(`piece ${i + 1} encoded in ${((performance.now() - t) / 1000).toFixed(0)}s, ${(blob.size / 1048576).toFixed(1)} MB`); break; }
-        catch (e) {
-          if (ac.signal.aborted) throw e;
-          if (stalled && ++stalls >= 2) {
-            const at = job.bounds[i] + lastF * (job.bounds[i + 1] - job.bounds[i]), mmss = `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')}`;
-            // the same spot sticking twice: the device's own decoder can't read it, so try the software one for this piece
-            if (!soft) {
-              const ok = await softDecodeSupported(rec.blob).catch(() => false);
-              ql(`piece ${i + 1} sticks at ${mmss}; software decoding ${ok ? 'available, using it for this piece' : 'not offered by this browser'}`);
-              if (!ok) throw new Error(`this device can’t read the video past ${mmss} (its decoder gets stuck there, and this browser has no software decoder to fall back on)`);
-              soft = true; job.soft = true; stalls = 0; show(`Piece ${i + 1} of ${n}: reading it the slower way…`); continue;
-            }
-            throw new Error(`this device gets stuck at ${mmss} in the video, even with software decoding`);
-          }
-          if (stalled) { ql(`piece ${i + 1} stalled at ${Math.round(lastF * 100)}%, starting again`); show(`Starting piece ${i + 1} of ${n} again…`); continue; }
-          if (++errors > 3) throw e;
-          ql(`piece ${i + 1} failed at ${Math.round(lastF * 100)}%: ${e.name || 'error'} ${String(e.message || '').slice(0, 80)}`);
-          await whenVisible();
-        } finally { clearInterval(dog); document.removeEventListener('visibilitychange', onVis); ac.signal.removeEventListener('abort', onStop); }
-      }
-      const chk = await checkPiece(rec.blob, blob, job.bounds[i], job.bounds[i + 1]).catch(() => ({ ok: true }));
-      ql(`piece ${i + 1} check ${chk.got}/${chk.want}`);
-      if (!chk.ok) { ql(`piece ${i + 1} short, making it again`); if (++job.redo > 6) throw new Error('pieces keep coming out short'); i--; continue; }
-      await store.putPiece(pid, i, blob);
-      job.done = i + 1; job.spent += (performance.now() - t) / 1000; job.vdone += job.bounds[i + 1] - job.bounds[i];
-      await editProj(pid, (p) => { p.quickJob = job; });
-    }
-    show('Joining the pieces…'); ql('joining');
-    const pieces = [];
-    for (let i = 0; i < n; i++) {
-      const b = await store.getPiece(pid, i);
-      if (!b) { job.done = i; await editProj(pid, (p) => { p.quickJob = job; }); throw new Error(`piece ${i + 1} is missing; Resume makes it again`); }
-      pieces.push(b);
-    }
-    const out = await joinPieces(rec.blob, pieces, job.bounds, { signal: ac.signal, onProgress: (f) => show(`Joining the pieces ${Math.floor(f * 100)}%`) });
-    const name = rec.name.replace(/(\.[^.]+)?$/, ' (quick jumps).mp4');
-    const file = new File([out], name, { type: 'video/mp4' });
-    await store.putVideo(pid, file);
-    await editProj(pid, (p) => { p.videoName = name; p.videoQuick = job.mode; delete p.quickJob; delete p.quickEst; });
-    await store.deletePieces(pid);
-    if (project && project.id === pid) { const t = video.currentTime, play = !video.paused; setVideoSrc(file); video.addEventListener('loadedmetadata', () => { video.currentTime = t; if (play) video.play().catch(() => {}); }, { once: true }); }
-    toast(`Video ready: jumps are quick now (${Math.round(out.size / 1048576)} MB${job.spent > 60 ? `, ${Math.round(job.spent / 60)} min of work` : ''}).`, 6000);
-  } catch (e) {
-    if (ac.signal.aborted) {
-      if (!conv.discard) { job.paused = true; await editProj(pid, (p) => { if (p.quickJob) p.quickJob.paused = true; }).catch(() => {}); }
-      toast(conv.discard ? 'Discarded. The video is as it was.' : `Paused with ${job.done} of ${n} pieces saved. Files → Resume carries on from there.`, 6000);
-    }
-    else { ql(`stopped by error: ${e.name || 'error'} ${String(e.message || '').slice(0, 80)}`); noteError('quick copy: ' + (e.message || e)); toast('Couldn’t prepare the video: ' + (e.message || e) + (job.done ? `. ${job.done} of ${n} pieces are saved; Files → Resume tries again.` : ''), 8000); }
-  } finally {
-    conv = null; $('#convPill').hidden = true; $('#blackout').hidden = true; wantAwake();
-    if ($('#dlgFiles').open) renderFiles();
-  }
-}
-async function discardQuick() {
-  if (!project) return;
-  const pid = project.id;
-  if (conv && conv.pid === pid) { conv.discard = true; conv.ac.abort(); }
-  await store.deletePieces(pid);
-  await editProj(pid, (p) => { delete p.quickJob; });
-  renderFiles();
-}
-// a new or removed video makes any preparation, sample timing or "prepared" mark stale
-async function resetQuick(pid) {
-  if (conv && conv.pid === pid) { conv.discard = true; conv.ac.abort(); }
-  if (measuring && measuring.pid === pid) measuring.ac.abort();
-  await store.deletePieces(pid).catch(() => {});
-  await editProj(pid, (p) => { delete p.quickJob; delete p.quickEst; delete p.videoQuick; });
-}
-$('#fQuickStd').onclick = () => { $('#dlgFiles').close(); startQuick('std'); };
-$('#fQuickSharp').onclick = () => { $('#dlgFiles').close(); startQuick('sharp'); };
-$('#fQuickResume').onclick = () => { $('#dlgFiles').close(); startQuick(); };
-$('#fQuickDiscard').onclick = () => confirmDo('Discard the saved pieces?', 'The pieces made so far are deleted. The video stays as it is.', 'Discard', discardQuick);
-$('#convStop').onclick = () => { if (conv) conv.ac.abort(); };
-$('#convBlack').onclick = () => { $('#blackLbl').textContent = $('#convLbl').textContent; $('#blackout').hidden = false; };
-$('#blackout').onclick = () => { $('#blackout').hidden = true; };
-function renderQuick() {
-  const p = project;
-  const show = !!(p && p.videoName && canConvert());
-  $('#qBox').hidden = !show;
-  if (!show) return;
-  const job = p.quickJob, running = conv && conv.pid === p.id, other = conv && conv.pid !== p.id;
-  const sStd = estFor(p, 'std'), sSharp = estFor(p, 'sharp');
-  const lbl = (name, res, s) => `${name} (${res})` + (s ? ` · ${fmtLeft(s.secs)} · ${s.mb >= 1024 ? (s.mb / 1024).toFixed(1) + ' GB' : Math.round(s.mb) + ' MB'}` : measuring ? ' · timing…' : '');
-  $('#fQuickStd').textContent = lbl('Standard', '720p', sStd);
-  $('#fQuickSharp').textContent = lbl('Sharp', 'full size, up to 1080p', sSharp);
-  const prepared = !!p.videoQuick && !job;
-  $('#fQuickStd').hidden = $('#fQuickSharp').hidden = prepared || !!job || !!conv;
-  $('#fQuickResume').hidden = !job || !!conv;
-  $('#fQuickDiscard').hidden = !job || other;
-  let note = '';
-  if (running) note = 'Preparing now; see the bar at the bottom.';
-  else if (other) note = 'Another project’s video is being prepared; one at a time.';
-  else if (job) {
-    const n = job.bounds.length - 1, rate = jobRate(p, job), dur = job.bounds[n];
-    const left = rate ? rate * (dur - job.vdone) + dur * JOIN : NaN;
-    note = `${job.mode === 'sharp' ? 'Sharp' : 'Standard'}: ${job.done} of ${n} pieces saved` + (isFinite(left) ? `, ${fmtLeft(left)} left` : '') + '.';
-    $('#fQuickResume').textContent = `Resume (${job.done} of ${n})`;
-  } else if (prepared) note = `This video is prepared for quick jumps${p.videoQuick === 'sharp' ? ' (sharp)' : ''}. For a sharper copy, add the original again with Replace video…, then choose Sharp.`;
-  else if (measuring) note = 'Timing a short sample on this device for the estimates…';
-  $('#fQuickNote').textContent = note;
-  $('#fQuickNote').hidden = !note;
-  if (!job && !prepared && (!p.quickEst || p.quickEst.path !== QPATH) && !conv) measureQuick();
-}
-
 function renderFiles() {
   const has = !!project;
-  renderQuick();
   $('#fOpenVideo').disabled = !has;
   $('#fOpenVideo').textContent = project && project.videoName ? 'Replace video…' : 'Add video…';
   $('#fRemoveVideo').hidden = !(project && project.videoName);
@@ -2261,7 +2070,7 @@ $('#btnFiles').onclick = () => { pauseMic('dialog'); renderFiles(); $('#dlgFiles
 $('#fOpenScript').onclick = () => $('#fileScript').click();
 $('#fOpenVideo').onclick = () => $('#fileVideo').click();
 $('#fRemoveVideo').onclick = () => confirmDo('Remove the video?', 'The video is removed from this script on this device. Your file elsewhere isn’t touched.', 'Remove', async () => {
-  await resetQuick(project.id); await store.deleteVideo(project.id); project.videoName = null; clearVideo(); saveProject(); renderFiles();
+  await store.deleteVideo(project.id); project.videoName = null; clearVideo(); saveProject(); renderFiles();
 });
 $('#fileScript').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { for (const d of ['#dlgFiles', '#dlgProjects']) if ($(d).open) $(d).close(); openScriptFile(f); } };
 $('#fileVideo').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) openVideoFile(f); };
@@ -2305,7 +2114,7 @@ if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged
 
 function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
-  $('#selSaid').value = settings.said; $('#selGuide').value = settings.guide; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
+  $('#selSaid').value = settings.said; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
   $('#selView').value = settings.view || 'auto';
   $('#viewNote').textContent = {
@@ -2333,7 +2142,47 @@ async function refreshSettingsExtras() {
   const cached = await modelIsCached();
   $('#aboutLine').textContent = `VO Prompter ${VERSION} · speech model ${cached ? 'downloaded' : 'not downloaded yet'}`;
 }
-$('#btnSettings').onclick = () => { pauseMic('dialog'); syncSettingsUI(); $('#dlgSettings').showModal(); refreshSettingsExtras(); };
+// Sliders move only when you take hold of the knob: a tap or drag on the line itself is ignored, so brushing it
+// while scrolling changes nothing. A small line marks the value it had when Settings was opened; tap the line, or
+// drag the knob close to it, to go back to exactly that value.
+const GRAB = 28, SNAP = 9; // px
+const rangeX = (el, v) => { const r = el.getBoundingClientRect(), min = +el.min, max = +el.max, k = max > min ? (v - min) / (max - min) : 0; const th = Math.min(20, r.height); return { r, x: r.left + th / 2 + k * (r.width - th), k, th }; };
+function setupRange(el) {
+  if (el.dataset.guarded) return;
+  el.dataset.guarded = '1';
+  const wrap = document.createElement('div'); wrap.className = 'rwrap';
+  el.parentNode.insertBefore(wrap, el); wrap.appendChild(el);
+  const mark = document.createElement('span'); mark.className = 'rmark'; wrap.appendChild(mark);
+  let start = null, reject = false, downX = 0, moved = false;
+  const fire = () => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+  el.addEventListener('pointerdown', (e) => {
+    start = el.value; moved = false; downX = e.clientX;
+    reject = Math.abs(e.clientX - rangeX(el, +el.value).x) > GRAB;
+  }, true);
+  el.addEventListener('pointermove', (e) => { if (Math.abs(e.clientX - downX) > 6) moved = true; }, true);
+  const end = (e) => {
+    if (reject && !moved && e.type === 'pointerup' && el.dataset.base != null && Math.abs(e.clientX - rangeX(el, +el.dataset.base).x) <= GRAB && el.value !== el.dataset.base) {
+      reject = false; el.value = el.dataset.base; fire();
+    } else if (reject && el.value !== start) { el.value = start; }
+    reject = false; start = null;
+  };
+  el.addEventListener('pointerup', end, true); el.addEventListener('pointercancel', end, true);
+  for (const type of ['input', 'change']) el.addEventListener(type, (e) => {
+    if (reject) { if (start != null) el.value = start; e.stopImmediatePropagation(); return; }
+    // close to where it was: snap onto it
+    const b = el.dataset.base;
+    if (type === 'input' && b != null && el.value !== b && Math.abs(rangeX(el, +el.value).x - rangeX(el, +b).x) <= SNAP) el.value = b;
+  }, true);
+}
+function markRanges() {
+  for (const el of document.querySelectorAll('#dlgSettings input[type="range"]')) {
+    setupRange(el);
+    el.dataset.base = el.value;
+    const { k, th, r } = rangeX(el, +el.value), z = el.offsetWidth ? r.width / el.offsetWidth : 1, t = th / z; // the dialog may be zoomed
+    el.parentNode.querySelector('.rmark').style.left = `calc(${t / 2}px + ${k} * (100% - ${t}px))`;
+  }
+}
+$('#btnSettings').onclick = () => { pauseMic('dialog'); syncSettingsUI(); $('#dlgSettings').showModal(); refreshSettingsExtras(); markRanges(); };
 const bindSel = (id, key, after) => { $(id).onchange = (e) => { settings[key] = e.target.value; saveSettings(); applySettings(); updateClasses(); syncSettingsUI(); if (after) after(); }; };
 // The script resizes at most once a frame while you drag; line estimates and the reading spot settle on release.
 let textSizeFrame = 0;
@@ -2342,7 +2191,7 @@ $('#sText').oninput = (e) => {
   if (!textSizeFrame) textSizeFrame = requestAnimationFrame(() => { textSizeFrame = 0; document.documentElement.style.setProperty('--script-size', settings.textSize + 'px'); });
 };
 $('#sText').onchange = () => { saveSettings(); applySettings(); sizeShells(true); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); };
-bindSel('#selSaid', 'said'); bindSel('#selGuide', 'guide'); bindSel('#selSpan', 'span'); bindSel('#selOverlap', 'overlap'); bindSel('#selTheme', 'theme');
+bindSel('#selSaid', 'said'); bindSel('#selSpan', 'span'); bindSel('#selOverlap', 'overlap'); bindSel('#selTheme', 'theme');
 bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
@@ -2449,7 +2298,6 @@ async function diagText() {
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
     `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
-    `Video preparation: ${conv ? 'running' : 'not running'}${project && project.quickJob ? ` · ${project.quickJob.mode} ${project.quickJob.done}/${project.quickJob.bounds.length - 1} saved` : ''}${qlog.length ? '\n  ' + qlog.join('\n  ') : ''}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

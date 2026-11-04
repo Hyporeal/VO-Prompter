@@ -224,8 +224,6 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .proj-item .acts { display: flex; gap: 8px; flex-wrap: wrap; }
 .proj-item input { width: 100%; border: 1px solid var(--accent); background: var(--surface-2); border-radius: 8px; padding: 7px 10px; }
 
-.conv-pill { position: fixed; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 30; display: flex; gap: 8px; align-items: center; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 6px 6px 6px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.35); zoom: var(--zu, 1); font-size: calc(14px * var(--ut, 1)); }
-.blackout { position: fixed; inset: 0; z-index: 100; background: #000; color: #444; display: grid; place-content: center; gap: 6px; text-align: center; font: 15px var(--font-num); }
 
 /* Dialogs */
 dialog { border: 1px solid var(--rule); border-radius: 14px; background: var(--surface); color: var(--fg); padding: 0; width: min(680px, calc((100vw - 32px) / var(--zu, 1))); max-height: calc((100dvh - 48px) / var(--zu, 1)); }
@@ -236,8 +234,13 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 fieldset { border: 1px solid var(--rule); border-radius: 10px; margin: 0; padding: 12px 14px 14px; display: grid; gap: 12px; }
 legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing: .06em; text-transform: uppercase; }
 .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; }
+.row:has(> select) { grid-template-columns: minmax(6.5em, 1fr) minmax(0, max-content); }
+.row > select { min-width: 0; width: 100%; text-overflow: ellipsis; }
 .row small { grid-column: 1 / -1; color: var(--muted); }
 .row input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); touch-action: pan-y; }
+.rwrap { grid-column: 1 / -1; position: relative; }
+.rwrap input[type="range"] { display: block; margin: 0; }
+.rmark { position: absolute; top: 50%; width: 3px; height: 22px; margin: -11px 0 0 -1.5px; border-radius: 2px; background: var(--muted); opacity: .75; pointer-events: none; }
 .row output { font-family: var(--font-num); }
 .row select { background: var(--surface-2); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; max-width: 280px; }
 .size-preview { zoom: calc(1 / var(--zu, 1)); grid-column: 1 / -1; background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: var(--script-size); line-height: 1.45; }
@@ -344,16 +347,7 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
         <button class="btn" id="fOpenVideo">Add video…</button>
         <button class="btn danger" id="fRemoveVideo" hidden>Remove video</button>
       </div>
-      <div id="qBox" hidden>
-        <p class="note"><b>Prepare video for quick jumps</b>: makes a copy with a full picture every second, so jumps are quick. Runs on this device while you keep working; the current video is used until the copy is ready. Keep the app open and the screen on (plugged in is best); Black screen saves power. If it's interrupted, Resume carries on from the last saved piece. Times are measured on this device.</p>
-        <div class="btns">
-          <button class="btn" id="fQuickStd">Standard</button>
-          <button class="btn" id="fQuickSharp">Sharp</button>
-          <button class="btn primary" id="fQuickResume" hidden>Resume</button>
-          <button class="btn danger" id="fQuickDiscard" hidden>Discard</button>
-        </div>
-        <p class="note" id="fQuickNote"></p>
-      </div>      <p class="note" id="fVideoNote">No video. Add the video the script's timestamps refer to.</p>
+      <p class="note" id="fVideoNote">No video. Add the video the script's timestamps refer to.</p>
       <div class="btns">
         <button class="btn" id="fExportDocx">Export edited script (.docx)</button>
         <button class="btn" id="fExportTxt">Export (.txt)</button>
@@ -383,16 +377,15 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
       <legend>Text</legend>
       <div class="row"><label for="sText">Text size</label><output id="oText"></output><input type="range" id="sText" min="10" max="56" step="1"></div>
       <div class="size-preview">The quick brown fox jumps over the lazy dog.</div>
-      <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="hl">Highlight word by word</option><option value="dim">Dim word by word</option><option value="sent">Dim each sentence when finished</option><option value="sent2">Dim a sentence after the next one</option><option value="off">No change</option></select></div>
-      <div class="row"><label for="selGuide">Guide style</label><select id="selGuide"><option value="under">Underline</option><option value="fill">Fill the letters</option></select></div>
-      <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="off">Off</option><option value="word">Next word</option><option value="phrase">Next phrase</option><option value="line">Whole line</option><option value="sentence">Whole sentence</option><option value="para">Whole paragraph</option></select></div>
-      <div class="row"><label for="selOverlap">Guide overlap</label><select id="selOverlap"><option value="none">None</option><option value="some">A little</option><option value="more">More</option></select>
-        <small>The app hears each word about half a second after you say it. With overlap, the guide also covers the word it just heard and the next few, so the word you're saying stays inside it. Try More if you still read past it; None is a single exact spot.</small></div>
+      <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="dim">Dim word by word</option><option value="sent">Dim each sentence when finished</option><option value="off">No change</option></select></div>
+      <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="off">Off</option><option value="line">Whole line</option><option value="sentence">Whole sentence</option><option value="para">Whole paragraph</option></select></div>
+      <div class="row"><label for="selOverlap">Guide overlap</label><select id="selOverlap"><option value="some">A little</option><option value="more">More</option></select>
+        <small>The app hears each word about half a second after you say it, so as you near the end of a line, sentence or paragraph, the guide reaches into the next one early and the word you're saying stays inside it. A little: from 3 words before the end. More: from 5 words before.</small></div>
       <div class="row"><label for="selAbove">Lines kept above</label><select id="selAbove"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select></div>
       <div class="row"><label for="selEvery">Scroll every</label><select id="selEvery"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option><option value="5">5 lines</option><option value="s1">1 sentence</option><option value="s2">2 sentences</option><option value="s3">3 sentences</option></select>
         <small>The page waits until you've read this many lines or sentences before it moves. With sentences, the new sentence moves to your reading position; a sentence too long to fit still scrolls before you run out of room.</small></div>
-      <div class="row"><label for="selScrollStyle">Scroll style</label><select id="selScrollStyle"><option value="pause">At a pause in your reading</option><option value="step">Right away</option><option value="slow">Slow and steady</option><option value="flow">Continuous (for flowing reads)</option></select>
-        <small>At a pause: moves only in a break between words. Slow and steady: drifts up gently instead of stepping. These two move every few lines or sentences (Scroll every), and always keep a couple of lines ahead in view. Continuous: the line you're reading stays at the reading position and the text moves up smoothly at your pace, like a teleprompter, so the next lines keep coming; best for long flowing reads such as audiobooks (Scroll every doesn't apply).</small></div>
+      <div class="row"><label for="selScrollStyle">Scroll style</label><select id="selScrollStyle"><option value="slow">Slow and steady</option><option value="flow">Continuous (for flowing reads)</option></select>
+        <small>Slow and steady: drifts up gently every few lines or sentences (Scroll every), and always keeps a couple of lines ahead in view. Continuous: the line you're reading stays at the reading position and the text moves up smoothly at your pace, like a teleprompter, so the next lines keep coming; best for long flowing reads such as audiobooks (Scroll every doesn't apply).</small></div>
       <div class="row"><label for="selRate">Video speed label</label><select id="selRate"><option value="off">Off</option><option value="on">On</option></select></div>
       <div class="row"><label for="selTheme">Theme</label><select id="selTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">Match the device</option></select></div>
     </fieldset>
@@ -479,8 +472,6 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
 </dialog>
 
 <div class="notices" id="notices" aria-live="polite"></div>
-<div class="conv-pill" id="convPill" hidden><span id="convLbl">Preparing video…</span><button class="btn" id="convBlack">Black screen</button><button class="btn danger" id="convStop">Stop</button></div>
-<div class="blackout" id="blackout" hidden><div id="blackLbl"></div><small>Tap to return</small></div>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

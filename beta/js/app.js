@@ -8,7 +8,7 @@ import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 import { canConvert, planQuick, encodePiece, checkPiece, joinPieces, measure as measureConv } from './convert.js';
 
-const VERSION = '1.1.35 beta';
+const VERSION = '1.1.36 beta';
 const $ = (s) => document.querySelector(s);
 
 // Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
@@ -2060,6 +2060,8 @@ async function editProj(pid, fn) {
   const p = await store.getProject(pid); if (p) { fn(p); await store.putProject(p); }
 }
 const fmtLeft = (s) => { if (!isFinite(s)) return ''; const m = Math.max(1, Math.round(s / 60)); return m >= 90 ? `about ${Math.floor(m / 60)} h ${m % 60} min` : `about ${m} min`; };
+const qlog = []; // video preparation steps, numbers only, for Copy diagnostics
+const ql = (m) => { qlog.push(`${new Date().toISOString().slice(11, 19)} ${m}`); if (qlog.length > 40) qlog.shift(); dbg('video', m); };
 const STALL = 15000, STALL_BACK = 6000; // ms without progress before a piece is restarted; less after coming back to the app
 const JOIN = 0.005; // joining takes about this many seconds per second of video
 // estimated seconds for a whole run of a mode, from the sample timed on this device
@@ -2113,6 +2115,7 @@ async function startQuick(mode) {
   if (job.paused) { delete job.paused; await editProj(pid, (p) => { p.quickJob = job; }); }
   const ac = new AbortController();
   conv = { ac, pid, job };
+  ql(`run ${job.mode}: ${job.done}/${job.bounds.length - 1} done, video ${job.bounds[job.bounds.length - 1].toFixed(0)}s${navigator.deviceMemory ? ', device memory ' + navigator.deviceMemory + ' GB' : ''}`);
   const n = job.bounds.length - 1, dur = job.bounds[n];
   const show = (txt) => { $('#convLbl').textContent = txt; $('#blackLbl').textContent = txt; };
   $('#convPill').hidden = false; wantAwake(); renderFiles();
@@ -2133,26 +2136,28 @@ async function startQuick(mode) {
         const inner = new AbortController(), onStop = () => inner.abort();
         ac.signal.addEventListener('abort', onStop, { once: true });
         let last = performance.now(), stalled = false;
-        const onVis = () => { if (!document.hidden) last = performance.now() - (STALL - STALL_BACK); };
+        const onVis = () => { ql(document.hidden ? 'app went to background' : 'app back in front'); if (!document.hidden) last = performance.now() - (STALL - STALL_BACK); };
         document.addEventListener('visibilitychange', onVis);
         const dog = setInterval(() => { if (!document.hidden && performance.now() - last > STALL) { stalled = true; inner.abort(); } }, 1000);
-        t = performance.now();
-        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { signal: inner.signal, onProgress: (f) => { last = performance.now(); upd(i, f); } }); break; }
+        t = performance.now(); ql(`piece ${i + 1}/${n} start ${job.bounds[i].toFixed(1)}-${job.bounds[i + 1].toFixed(1)}s ${job.mode}${errors ? ' retry ' + errors : ''}${document.hidden ? ' (hidden)' : ''}`);
+        let lastF = 0;
+        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { signal: inner.signal, onProgress: (f) => { last = performance.now(); lastF = f; upd(i, f); } }); ql(`piece ${i + 1} encoded in ${((performance.now() - t) / 1000).toFixed(0)}s, ${(blob.size / 1048576).toFixed(1)} MB`); break; }
         catch (e) {
           if (ac.signal.aborted) throw e;
-          if (stalled) { dbg('video', `piece ${i + 1} stalled, starting it again`); show(`Starting piece ${i + 1} of ${n} again…`); continue; }
+          if (stalled) { ql(`piece ${i + 1} stalled at ${Math.round(lastF * 100)}%, starting again`); show(`Starting piece ${i + 1} of ${n} again…`); continue; }
           if (++errors > 3) throw e;
-          dbg('video', `piece ${i + 1} failed (${e.name || 'error'}), trying again`);
+          ql(`piece ${i + 1} failed at ${Math.round(lastF * 100)}%: ${e.name || 'error'} ${String(e.message || '').slice(0, 80)}`);
           await whenVisible();
         } finally { clearInterval(dog); document.removeEventListener('visibilitychange', onVis); ac.signal.removeEventListener('abort', onStop); }
       }
       const chk = await checkPiece(rec.blob, blob, job.bounds[i], job.bounds[i + 1]).catch(() => ({ ok: true }));
-      if (!chk.ok) { dbg('video', `piece ${i + 1} came out short (${chk.got} of ${chk.want} pictures), making it again`); if (++job.redo > 6) throw new Error('pieces keep coming out short'); i--; continue; }
+      ql(`piece ${i + 1} check ${chk.got}/${chk.want}`);
+      if (!chk.ok) { ql(`piece ${i + 1} short, making it again`); if (++job.redo > 6) throw new Error('pieces keep coming out short'); i--; continue; }
       await store.putPiece(pid, i, blob);
       job.done = i + 1; job.spent += (performance.now() - t) / 1000; job.vdone += job.bounds[i + 1] - job.bounds[i];
       await editProj(pid, (p) => { p.quickJob = job; });
     }
-    show('Joining the pieces…');
+    show('Joining the pieces…'); ql('joining');
     const pieces = [];
     for (let i = 0; i < n; i++) {
       const b = await store.getPiece(pid, i);
@@ -2172,7 +2177,7 @@ async function startQuick(mode) {
       if (!conv.discard) { job.paused = true; await editProj(pid, (p) => { if (p.quickJob) p.quickJob.paused = true; }).catch(() => {}); }
       toast(conv.discard ? 'Discarded. The video is as it was.' : `Paused with ${job.done} of ${n} pieces saved. Files → Resume carries on from there.`, 6000);
     }
-    else { noteError('quick copy: ' + (e.message || e)); toast('Couldn’t prepare the video: ' + (e.message || e) + (job.done ? `. ${job.done} of ${n} pieces are saved; Files → Resume tries again.` : ''), 8000); }
+    else { ql(`stopped by error: ${e.name || 'error'} ${String(e.message || '').slice(0, 80)}`); noteError('quick copy: ' + (e.message || e)); toast('Couldn’t prepare the video: ' + (e.message || e) + (job.done ? `. ${job.done} of ${n} pieces are saved; Files → Resume tries again.` : ''), 8000); }
   } finally {
     conv = null; $('#convPill').hidden = true; $('#blackout').hidden = true; wantAwake();
     if ($('#dlgFiles').open) renderFiles();
@@ -2432,6 +2437,7 @@ async function diagText() {
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
     `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
+    `Video preparation: ${conv ? 'running' : 'not running'}${project && project.quickJob ? ` · ${project.quickJob.mode} ${project.quickJob.done}/${project.quickJob.bounds.length - 1} saved` : ''}${qlog.length ? '\n  ' + qlog.join('\n  ') : ''}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

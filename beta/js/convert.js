@@ -81,6 +81,7 @@ export async function planQuick(file, PIECE = PIECE_S) {
   }
   const first = await sink.getFirstPacket({ metadataOnly: true });
   bounds.push(dur);
+  try { input.dispose(); } catch (e) { /* closed */ }
   return { dur, bounds, w: track.displayWidth, h: track.displayHeight };
 }
 
@@ -97,13 +98,14 @@ export async function encodePiece(file, start, end, mode, { onProgress, signal }
   });
   if (!conv.isValid) throw new Error('this video can’t be converted here (' + conv.discardedTracks.map((d) => d.reason).join(', ') + ')');
   if (onProgress) conv.onProgress = onProgress;
-  await untilAbort(conv.execute(), signal, () => conv.cancel());
+  try { await untilAbort(conv.execute(), signal, () => conv.cancel()); }
+  finally { setTimeout(() => { try { input.dispose(); } catch (e) { /* already closed */ } }, 0); }
   return blob('video/mp4');
 }
 
 // Check a finished piece against the original: same number of pictures, so nothing was dropped along the way.
 export async function checkPiece(file, piece, start, end) {
-  const { mb, track } = await open(file);
+  const { mb, track, input } = await open(file);
   const sink = new mb.EncodedPacketSink(track), o = { metadataOnly: true };
   let want = 0;
   const k = await sink.getKeyPacket(start, o);
@@ -111,7 +113,8 @@ export async function checkPiece(file, piece, start, end) {
   const pin = new mb.Input({ source: new mb.BlobSource(piece), formats: mb.ALL_FORMATS });
   const pv = await pin.getPrimaryVideoTrack();
   let got = 0;
-  if (pv) for await (const pk of new mb.EncodedPacketSink(pv).packets(undefined, undefined, o)) got++;
+  try { if (pv) for await (const pk of new mb.EncodedPacketSink(pv).packets(undefined, undefined, o)) got++; }
+  finally { try { pin.dispose(); input.dispose(); } catch (e) { /* closed */ } }
   return { ok: got >= want - 1, got, want };
 }
 
@@ -174,9 +177,11 @@ async function joinRun(file, pieces, bounds, { onProgress, signal } = {}) {
       await vs.add(pk.clone({ timestamp: ts }), vFirst ? { decoderConfig: cfg } : undefined); vFirst = false;
       if (onProgress) onProgress(Math.min(1, ts / total));
     }
+    try { pin.dispose(); } catch (e) { /* closed */ }
   }
   await audioUpTo(Infinity);
   await output.finalize();
+  try { input.dispose(); } catch (e) { /* closed */ }
   return blob('video/mp4');
 }
 function sameCfg(a, b) {

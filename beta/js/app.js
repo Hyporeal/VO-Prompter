@@ -7,15 +7,15 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.31 beta';
+const VERSION = '1.1.32 beta';
 const $ = (s) => document.querySelector(s);
 
 // Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
-// the guide, more overlap, slow and steady scrolling one sentence at a time).
+// the guide, more overlap, continuous scrolling).
 const DEFAULTS = {
   textSize: 18, said: 'sent', guide: 'fill', span: 'sentence', overlap: 'more', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'all',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'slow', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'flow', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
   view: 'auto', uiScale: 100, uiText: 100,
 };
 const settings = store.loadSettings(DEFAULTS);
@@ -332,22 +332,17 @@ function markDirtyUnits(u0, u1) {
   const c = (u) => model.units[Math.max(0, Math.min(model.N - 1, u))].ti;
   markDirtyTokens(c(u0) - 1, c(u1) + 1);
 }
-// While listening, the guide runs ahead of the last recognized word by the recognizer's usual delay, so it sits
-// on the word you're saying rather than the one you just finished. On a slow device the recognizer can go quiet
-// for up to a second between updates while you keep reading, so the guide keeps moving at your pace through
-// that gap (up to GAP_MAX s, and at most LEAD_MAX words ahead of the last word heard). It never crosses a
-// sentence end, so a pause at the end of a sentence never leaves it ahead.
-const GAP_MAX = 1.4, LEAD_MAX = 3.5;
+// While listening, the guide runs slightly ahead of the last recognized word by the recognizer's usual delay,
+// so it sits on the word you're saying rather than the one you just finished. It never crosses a sentence end.
 function guideUnit() {
   const u = Math.min(shown.pos, model.N - 1);
   if (!listening) { gHold.pos = u; gHold.base = u; return u; }
   let p = u;
   const r = follower.rate();
   const since = performance.now() / 1000 - r.lastT;
-  if (r.rate > 0 && since < GAP_MAX + 0.5) {
-    // how far you get, at your pace in syllables, during the recognizer's delay plus the time since it last spoke
-    const sec = (LAG[settings.engine] || 0.4) + Math.min(since, GAP_MAX);
-    const lead = Math.min(LEAD_MAX, follower.sylRate() ? follower.aheadOf(u, sec) - u : r.rate * sec);
+  if (r.rate > 0 && since < 0.9) {
+    // how far you get, at your pace in syllables, during the recognizer's usual delay
+    const lead = Math.min(1.2, follower.sylRate() ? follower.aheadOf(u, LAG[settings.engine] || 0.4) - u : r.rate * (LAG[settings.engine] || 0.4));
     p = u + Math.floor(lead + 0.35);
     const sent = model.sentences[model.tokens[model.units[u].ti].sent];
     if (sent) p = Math.min(p, sent.u1 - 1);

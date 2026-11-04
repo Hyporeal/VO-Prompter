@@ -46,6 +46,19 @@ function memTarget(mb) {
   return { target, blob: (type) => new Blob(parts, { type }) };
 }
 
+// Settle as soon as the signal fires, even if the encoder is stuck (Android can take it away from a page in the
+// background without saying so); the stuck work is told to cancel and left behind.
+function untilAbort(work, signal, cancel) {
+  if (!signal) return work;
+  if (signal.aborted) { if (cancel) Promise.resolve().then(cancel).catch(() => {}); work.catch(() => {}); return Promise.reject(new DOMException('stopped', 'AbortError')); }
+  return new Promise((res, rej) => {
+    const f = () => { if (cancel) Promise.resolve().then(cancel).catch(() => {}); rej(new DOMException('stopped', 'AbortError')); };
+    signal.addEventListener('abort', f, { once: true });
+    work.then((v) => { signal.removeEventListener('abort', f); signal.aborted ? rej(new DOMException('stopped', 'AbortError')) : res(v); },
+      (e) => { signal.removeEventListener('abort', f); rej(signal.aborted ? new DOMException('stopped', 'AbortError') : e); });
+  });
+}
+
 async function open(file) {
   const mb = await lib();
   const input = new mb.Input({ source: new mb.BlobSource(file), formats: mb.ALL_FORMATS });
@@ -84,11 +97,22 @@ export async function encodePiece(file, start, end, mode, { onProgress, signal }
   });
   if (!conv.isValid) throw new Error('this video can’t be converted here (' + conv.discardedTracks.map((d) => d.reason).join(', ') + ')');
   if (onProgress) conv.onProgress = onProgress;
-  const stop = () => conv.cancel();
-  if (signal) { if (signal.aborted) throw new DOMException('stopped', 'AbortError'); signal.addEventListener('abort', stop, { once: true }); }
-  try { await conv.execute(); } finally { if (signal) signal.removeEventListener('abort', stop); }
-  if (signal && signal.aborted) throw new DOMException('stopped', 'AbortError');
+  await untilAbort(conv.execute(), signal, () => conv.cancel());
   return blob('video/mp4');
+}
+
+// Check a finished piece against the original: same number of pictures, so nothing was dropped along the way.
+export async function checkPiece(file, piece, start, end) {
+  const { mb, track } = await open(file);
+  const sink = new mb.EncodedPacketSink(track), o = { metadataOnly: true };
+  let want = 0;
+  const k = await sink.getKeyPacket(start, o);
+  for await (const pk of sink.packets(k || undefined, undefined, o)) { if (pk.timestamp >= end) { if (pk.type === 'key') break; continue; } if (pk.timestamp >= start) want++; }
+  const pin = new mb.Input({ source: new mb.BlobSource(piece), formats: mb.ALL_FORMATS });
+  const pv = await pin.getPrimaryVideoTrack();
+  let got = 0;
+  if (pv) for await (const pk of new mb.EncodedPacketSink(pv).packets(undefined, undefined, o)) got++;
+  return { ok: got >= want - 1, got, want };
 }
 
 // Time a short sample of each mode on this device: two lengths, so the fixed start-up cost of each piece and the
@@ -109,7 +133,8 @@ export async function measure(file, plan, modes = ['std', 'sharp'], signal) {
 }
 
 // Join the pieces into one video and copy the original's sound in. Returns a Blob.
-export async function joinPieces(file, pieces, bounds, { onProgress, signal } = {}) {
+export function joinPieces(file, pieces, bounds, opts = {}) { return untilAbort(joinRun(file, pieces, bounds, opts), opts.signal); }
+async function joinRun(file, pieces, bounds, { onProgress, signal } = {}) {
   const { mb, input, track: srcV } = await open(file);
   const srcA = await input.getPrimaryAudioTrack();
   const { target, blob } = memTarget(mb);

@@ -87,7 +87,18 @@ export async function planQuick(file, PIECE = PIECE_S) {
 }
 
 // Encode the picture between start and end (seconds in the original) into a small video-only file.
-export async function encodePiece(file, start, end, mode, { onProgress, signal } = {}) {
+// Whether this browser offers a software decoder for this video (used when the device's own decoder gets stuck).
+export async function softDecodeSupported(file) {
+  const { track, input } = await open(file);
+  try {
+    const cfg = await track.getDecoderConfig();
+    if (!cfg || typeof VideoDecoder === 'undefined') return false;
+    const r = await VideoDecoder.isConfigSupported({ ...cfg, hardwareAcceleration: 'prefer-software' });
+    return !!r.supported;
+  } catch (e) { return false; } finally { try { input.dispose(); } catch (e) { /* closed */ } }
+}
+
+export async function encodePiece(file, start, end, mode, { onProgress, signal, soft } = {}) {
   const { mb, input, track } = await open(file);
   const m = MODES[mode] || MODES.std;
   const { target, blob } = memTarget(mb);
@@ -105,8 +116,14 @@ export async function encodePiece(file, start, end, mode, { onProgress, signal }
   });
   if (!conv.isValid) throw new Error('this video can’t be converted here (' + conv.discardedTracks.map((d) => d.reason).join(', ') + ')');
   if (onProgress) conv.onProgress = onProgress;
+  // soft: read the video with the browser's software decoder instead of the device's own, for this piece only
+  const P = typeof VideoDecoder !== 'undefined' ? VideoDecoder.prototype : null, orig = P && P.configure;
+  if (soft && P) P.configure = function (c) { return orig.call(this, { ...c, hardwareAcceleration: 'prefer-software' }); };
   try { await untilAbort(conv.execute(), signal, () => conv.cancel()); }
-  finally { setTimeout(() => { try { input.dispose(); } catch (e) { /* already closed */ } }, 0); }
+  finally {
+    if (soft && P) P.configure = orig;
+    setTimeout(() => { try { input.dispose(); } catch (e) { /* already closed */ } }, 0);
+  }
   return blob('video/mp4');
 }
 

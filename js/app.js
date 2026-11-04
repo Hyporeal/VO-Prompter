@@ -15,7 +15,7 @@ const $ = (s) => document.querySelector(s);
 const DEFAULTS = {
   textSize: 18, said: 'sent', guide: 'fill', span: 'sentence', overlap: 'more', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'all',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'flow', markStrength: 'faint', offNotice: 'off', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'flow', markStrength: 'faint', offNotice: 'off', fade: 'fast', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
   view: 'auto', uiScale: 100, uiText: 100,
 };
 const settings = store.loadSettings(DEFAULTS);
@@ -28,8 +28,10 @@ if (settings.guide === 'off') settings.span = 'off';
   if (settings.said === 'hl') settings.said = 'dim';
   if (settings.said === 'sent2') settings.said = 'sent';
   if (settings.span === 'word' || settings.span === 'phrase') settings.span = 'line';
-  if (settings.overlap !== 'some' && settings.overlap !== 'more') settings.overlap = 'some';
+  if (!['auto', 'some', 'more'].includes(settings.overlap)) settings.overlap = 'some';
   if (settings.scrollStyle === 'pause' || settings.scrollStyle === 'step') settings.scrollStyle = 'slow';
+  settings.markStrength = 'faint'; settings.offNotice = 'off'; // 1.1.41: settings removed
+  if (settings.fade !== 'slow') settings.fade = 'fast';
   if (JSON.stringify(settings) !== was) store.saveSettings(settings);
 }
 if (settings.voiceURI !== undefined) { settings.ttsVoice = 'android:' + settings.voiceURI; delete settings.voiceURI; }
@@ -140,6 +142,7 @@ function applySettings() {
   document.documentElement.dataset.theme = settings.theme;
   document.documentElement.style.setProperty('--script-size', settings.textSize + 'px');
   docEl.classList.toggle('said-hl', settings.said === 'hl');
+  document.documentElement.classList.toggle('fade-slow', settings.fade === 'slow');
   docEl.classList.toggle('said-dim', settings.said === 'dim');
   docEl.classList.toggle('said-sent', settings.said === 'sent' || settings.said === 'sent2');
   const ms = { faint: ['40%', '1.5px'], medium: ['70%', '2px'], strong: ['100%', '2.5px'] }[settings.markStrength] || ['40%', '1.5px'];
@@ -336,6 +339,41 @@ const paintBuf = { el: [], cls: [] };
 let guideA = -1, guideB = -1, lastFollowPos = 0, lastAnchor = 0, lastTrusted = 0;
 let blockByPid = new Map();
 const LAG = { device: 0.4, google: 0.7 }; // typical seconds between saying a word and the recognizer reporting it
+// The recognizer's delay on this device, measured while you read: when you start speaking after a pause (the mic
+// level rises), the time until the next word is heard, less how long that word takes to say at your pace. The
+// middle of the last 15 measurements is used (Automatic guide overlap); until there are 3, the typical value.
+const lagM = { floor: 0, quiet: 0, onset: 0, base: -1, s: [], est: 0 };
+function lagLevel(rms) {
+  const now = performance.now();
+  lagM.floor = !lagM.floor || rms < lagM.floor ? Math.max(rms, 1e-5) : lagM.floor * 0.998 + rms * 0.002;
+  if (rms < Math.max(lagM.floor * 4, 0.002)) { if (!lagM.quiet) lagM.quiet = now; return; }
+  if (lagM.quiet && now - lagM.quiet > 350 && !lagM.onset && model) { lagM.onset = now; lagM.base = follower.pos; }
+  lagM.quiet = 0;
+}
+function lagHeard() {
+  if (!lagM.onset || !model) return;
+  const now = performance.now();
+  if (now - lagM.onset > 2500 || follower.pos < lagM.base) { lagM.onset = 0; return; }
+  if (follower.pos === lagM.base) return;
+  const rate = follower.sylRate(), u = model.units[lagM.base];
+  const d = (now - lagM.onset) / 1000 - (rate && u ? (u.syl || 1) / rate : 0.25);
+  if (d > 0.05 && d < 2) {
+    lagM.s.push(d); if (lagM.s.length > 15) lagM.s.shift();
+    const a = [...lagM.s].sort((x, y) => x - y); lagM.est = a[a.length >> 1];
+  }
+  lagM.onset = 0;
+}
+const lagNow = () => (lagM.s.length >= 3 ? lagM.est : LAG[settings.engine] || 0.4);
+// Automatic overlap: how far you get past the last word heard during that delay (at your pace), plus a margin,
+// from 3 to 8 words; it moves one word at a time, at most every 0.4 s, so the guide doesn't jump about.
+let autoN = 3, autoT = 0;
+function autoNext() {
+  const u = Math.min(shown.pos || 0, model.N - 1);
+  const want = follower.sylRate() ? Math.max(3, Math.min(8, Math.ceil(follower.aheadOf(u, lagNow() + 0.6) - u) + 1)) : 3;
+  const now = performance.now();
+  if (want !== autoN && now - autoT > 400) { autoN += Math.sign(want - autoN); autoT = now; }
+  return autoN;
+}
 function updateClasses() { dirtyAll = true; }
 function markDirtyTokens(a, b) { if (a < dirtyLo) dirtyLo = a; if (b > dirtyHi) dirtyHi = b; }
 function markDirtyUnits(u0, u1) {
@@ -390,7 +428,7 @@ const OVERLAP = { some: { back: 2, fwd: 6, next: 3 }, more: { back: 2, fwd: 8, n
 function guideRange() {
   if (mode !== 'read' || settings.span === 'off' || !model || follower.pos >= model.N) return [-1, -1];
   const { tokens, units } = model;
-  const T = tokens.length, span = settings.span, ov = OVERLAP[settings.overlap];
+  const T = tokens.length, span = settings.span, ov = settings.overlap === 'auto' ? { back: 2, fwd: 6, next: autoNext() } : OVERLAP[settings.overlap];
   const byWord = span === 'word' || span === 'phrase';
   let c, a, b;
   if (!ov) { c = a = b = units[guideUnit()].ti; }
@@ -714,9 +752,9 @@ function onFollow(e) {
 function engineFor(kind) {
   if (!engines[kind]) {
     const cb = {
-      partial: (t) => { follower.input(t, false); logTake(t, 0); if (settings.debug) dbg('heard', `partial ${t.split(' ').length} words → spot ${follower.pos}`); },
-      final: (t) => { follower.input(t, true); logTake(t, 1); if (settings.debug) dbg('heard', `final ${t ? t.split(' ').length : 0} words → spot ${follower.pos}`); },
-      level: (rms) => { const v = Math.min(1, Math.sqrt(rms) * 3.2); $('#micDot').style.transform = `scale(${1 + v * 0.9})`; },
+      partial: (t) => { follower.input(t, false); lagHeard(); logTake(t, 0); if (settings.debug) dbg('heard', `partial ${t.split(' ').length} words → spot ${follower.pos}`); },
+      final: (t) => { follower.input(t, true); lagHeard(); logTake(t, 1); if (settings.debug) dbg('heard', `final ${t ? t.split(' ').length : 0} words → spot ${follower.pos}`); },
+      level: (rms) => { lagLevel(rms); const v = Math.min(1, Math.sqrt(rms) * 3.2); $('#micDot').style.transform = `scale(${1 + v * 0.9})`; },
       error: (msg) => { dbg('mic', 'error ' + msg); toast(msg, 5000); stopListening(); },
       dropped: () => micDropped(),
     };
@@ -2114,7 +2152,7 @@ if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged
 
 function syncSettingsUI() {
   $('#sText').value = settings.textSize; $('#oText').textContent = settings.textSize + ' px';
-  $('#selSaid').value = settings.said; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; $('#selOverlap').disabled = settings.span === 'off';
+  $('#selSaid').value = settings.said; $('#selSpan').value = settings.span; $('#selOverlap').value = settings.overlap; 
   $('#selTheme').value = settings.theme; $('#selEngine').value = settings.engine; $('#selMic').value = settings.micSource;
   $('#selView').value = settings.view || 'auto';
   $('#viewNote').textContent = {
@@ -2127,10 +2165,16 @@ function syncSettingsUI() {
   $('#sUiText').value = settings.uiText || 100; $('#oUiText').textContent = (settings.uiText || 100) + '%';
   $('#selDebug').value = settings.debug ? 'on' : 'off'; $('#btnDbg').hidden = !settings.debug;
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
-  $('#selOff').value = settings.offNotice;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
-  $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery); $('#selMarkStr').value = settings.markStrength;
-  $('#selEvery').disabled = settings.scrollStyle === 'flow';
+  $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery);
+  $('#selFade').value = settings.fade;
+  // a setting that doesn't apply because of another one is greyed out, row and all
+  const na = (row, sel, off) => { $(row).classList.toggle('na', off); $(sel).disabled = off; };
+  na('#rowEvery', '#selEvery', settings.scrollStyle === 'flow');
+  na('#rowOverlap', '#selOverlap', settings.span === 'off');
+  na('#rowFade', '#selFade', settings.span === 'off');
+  na('#rowMic', '#selMic', settings.engine !== 'device');
+  na('#rowTakes', '#selTakes', settings.engine !== 'device');
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
   $('#engineNote').textContent = settings.engine === 'google'
     ? 'Online speech: your browser’s own speech recognition (Google in Chrome, Microsoft in Edge on a PC). Can be more accurate, but it sends your audio to that service, needs internet, and can’t save recordings.'
@@ -2192,7 +2236,7 @@ $('#sText').oninput = (e) => {
 };
 $('#sText').onchange = () => { saveSettings(); applySettings(); sizeShells(true); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); };
 bindSel('#selSaid', 'said'); bindSel('#selSpan', 'span'); bindSel('#selOverlap', 'overlap'); bindSel('#selTheme', 'theme');
-bindSel('#selMarks', 'marks'); bindSel('#selMarkStr', 'markStrength'); bindSel('#selOff', 'offNotice');
+bindSel('#selMarks', 'marks'); bindSel('#selFade', 'fade');
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
@@ -2287,7 +2331,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.ser
 
 // ---------- diagnostics ----------
 async function diagText() {
-  const pick = ['textSize', 'said', 'guide', 'span', 'overlap', 'engine', 'micSource', 'marks', 'markStrength', 'linesAbove', 'scrollEvery', 'scrollStyle', 'offNotice', 'ttsUnit', 'ttsRate'];
+  const pick = ['textSize', 'said', 'guide', 'span', 'overlap', 'engine', 'micSource', 'marks', 'linesAbove', 'scrollEvery', 'scrollStyle', 'fade', 'ttsUnit', 'ttsRate'];
   const lines = [
     `VO Prompter ${VERSION}`,
     `Browser: ${navigator.userAgent}`,
@@ -2298,6 +2342,7 @@ async function diagText() {
     `Now: ${listening ? 'listening' : 'not listening'} (${engine ? engine.name : 'no engine yet'}) · mic restarts: ${diag.micRestarts}`,
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
     `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
+    `Recognizer delay: ${lagM.s.length >= 3 ? lagM.est.toFixed(2) + ' s measured (' + lagM.s.length + ' times)' : 'not measured yet, using ' + (LAG[settings.engine] || 0.4) + ' s'} · pace ${follower ? follower.sylRate().toFixed(1) : '0'} syllables/s${settings.overlap === 'auto' ? ' · overlap now ' + autoN + ' words' : ''}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

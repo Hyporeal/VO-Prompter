@@ -364,12 +364,6 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
       <div class="btns"><button class="btn" id="fAddVo">Add a recording…</button></div>
       <p class="note">Add your finished read (WAV, MP3 or M4A) and Listen mode can play it, sentence by sentence, with the guide following. Add more later (a pickup session, say): newer recordings replace older ones where they overlap. Finding the words runs on this device and takes a while for long recordings.</p>
     </fieldset>
-    <fieldset>
-      <legend>Test recordings</legend>
-      <div class="proj-list" id="takeList"></div>
-      <div class="btns"><button class="btn danger" id="fTakesAll" hidden>Delete all recordings</button></div>
-      <p class="note">Saved while listening when Settings → Save test recordings is on. Save gives a .zip with the audio and the app's log, for testing. They hold your read of the script, so keep them private.</p>
-    </fieldset>
     <p class="note">Scripts, edits, videos and recordings stay on this device. Nothing is uploaded.</p>
   </div>
 </dialog>
@@ -421,7 +415,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
       <legend>Diagnostics</legend>
       <div class="row"><label for="selRate">Video speed label</label><select id="selRate"><option value="off">Off</option><option value="on">On</option></select></div>
       <div class="row" id="rowTakes"><label for="selTakes">Save test recordings</label><select id="selTakes"><option value="off">Off</option><option value="on">On</option></select>
-        <small>Also saves what the mic hears while listening, plus a log of what the app heard and where it put you, so the app can be tested on real reads. Files → Test recordings. On-device engine only; about 0.5 MB a minute.</small></div>
+        <small>Also saves what the mic hears while listening, plus a log of what the app heard and where it put you, so the app can be tested on real reads. Test recordings is just below. On-device engine only; about 0.5 MB a minute.</small></div>
+      <div class="btns"><button class="btn" id="btnTakes">Test recordings…</button></div>
       <div class="row"><label for="selDebug">Debug log</label><select id="selDebug"><option value="off">Off</option><option value="on">On</option></select>
         <small>While on, the app notes what voices, video and the speech engine do, with times, so a problem can be traced. Turn it on, reproduce the problem, then Copy debug log and paste it into a message. No script words, file names or account details are logged.</small></div>
       <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><button class="btn" id="btnDbg" hidden>Copy debug log</button></div>
@@ -437,6 +432,16 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
   </div>
 </dialog>
 
+<dialog id="dlgTakes">
+  <div class="dlg-head"><h2>Test recordings</h2><button class="btn" data-close>Close</button></div>
+  <div class="dlg-body">
+    <fieldset>
+      <div class="proj-list" id="takeList"></div>
+      <div class="btns"><button class="btn danger" id="fTakesAll" hidden>Delete all recordings</button></div>
+      <p class="note">Saved while listening when Settings → Save test recordings is on. Save gives a .zip with the audio and the app's log, for testing. They hold your read of the script, so keep them private.</p>
+    </fieldset>
+  </div>
+</dialog>
 <dialog id="dlgToc">
   <div class="dlg-head"><h2>Contents</h2><button class="btn" data-close>Close</button></div>
   <div class="dlg-body">

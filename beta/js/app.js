@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.42 beta';
+const VERSION = '1.1.43 beta';
 const $ = (s) => document.querySelector(s);
 
 // Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
@@ -419,6 +419,23 @@ function pauseWeight(k) {
   const wordsPerSec = rate / Math.max(1, follower.cumSyl[model.N] / Math.max(1, model.N));
   return Math.max(0, Math.min(2.5, (median(a) - median(base)) * wordsPerSec));
 }
+// The next paragraph also lights when you pause at the end of this one: at most 2 words still unheard and the mic
+// quiet for 0.2 s (the recognizer often holds back the last word of a phrase until well into the pause). It stays
+// lit while you start the next paragraph; reading back (a retake) drops it again. On-device engine only (the
+// online one doesn't report the mic level).
+const PCROSS = { quiet: 200, words: 2 };
+let cross = null; // { from: unit, next: token } while the next paragraph is lit early
+function pauseCross() {
+  const { units, tokens } = model, N = model.N, u = Math.min(shown.pos || 0, N - 1);
+  if (cross && u >= cross.from && u < cross.end) return cross.next;
+  cross = null;
+  if (settings.engine !== 'device' || !lagM.quiet || performance.now() - lagM.quiet < PCROSS.quiet) return -1;
+  const pid = tokens[units[u].ti].pid;
+  let e = u; while (e + 1 < N && tokens[units[e + 1].ti].pid === pid) e++;
+  if (e - u + 1 > PCROSS.words || e + 1 >= N) return -1;
+  cross = { from: u, end: e + 1, next: units[e + 1].ti };
+  return cross.next;
+}
 // how far the guide reaches: walk on from the word you're at, spending the overlap in words, each pause costing
 // its weight; never past the end of the paragraph you're in (the next one lights only once its last word is heard)
 function reachAhead(u, budget) {
@@ -493,6 +510,7 @@ function guideRange() {
     c = units[Math.min(shown.pos || 0, model.N - 1)].ti;
     a = Math.max(0, c - (listening && byWord ? ov.back : 0));
     b = byWord ? Math.min(T - 1, c + ov.fwd) : listening ? reachAhead(Math.min(shown.pos || 0, model.N - 1), ov.next) : c;
+    if (!byWord && listening) b = Math.max(b, pauseCross());
   }
   if (span === 'phrase') {
     let t1 = c, n = 0;
@@ -2085,7 +2103,7 @@ function newTake() {
     note: 'events: [ms after recording started, recognized text, final (1) or partial (0), reading spot (word unit) after it]', events: take.events }), 'application/json');
   take.onStart = (type) => { take.t0 = performance.now(); take.type = type; curTake = take; renderMic(); writeLog(); };
   take.onData = (blob, type) => { take.type = type; write('.part' + String(take.n++).padStart(5, '0'), blob, type); if (take.n % 3 === 0) writeLog(); };
-  take.onStop = () => { writeLog(); take.chain.then(() => { if (!take.failed) toast('Test recording saved (Files → Test recordings).'); if ($('#dlgFiles').open) renderTakes(); }); };
+  take.onStop = () => { writeLog(); take.chain.then(() => { if (!take.failed) toast('Test recording saved (Settings → Diagnostics → Test recordings).'); if ($('#dlgTakes').open) renderTakes(); }); };
   return take;
 }
 const takeExt = (type) => /mp4/.test(type) ? 'm4a' : /ogg/.test(type) ? 'ogg' : 'webm';
@@ -2159,8 +2177,8 @@ function renderFiles() {
   $('#fVideoNote').textContent = !has ? 'Open a project first.' : project.videoName ? `Video: ${project.videoName}` : 'No video. Add the video the script’s timestamps refer to.';
   for (const id of ['#fExportDocx', '#fExportTxt', '#fClearMarks']) $(id).disabled = !has;
   renderVo();
-  renderTakes();
 }
+$('#btnTakes').onclick = () => { renderTakes(); $('#dlgTakes').showModal(); };
 $('#btnFiles').onclick = () => { pauseMic('dialog'); renderFiles(); $('#dlgFiles').showModal(); };
 $('#fOpenScript').onclick = () => $('#fileScript').click();
 $('#fOpenVideo').onclick = () => $('#fileVideo').click();

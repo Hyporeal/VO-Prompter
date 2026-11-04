@@ -7,7 +7,7 @@ import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
 
-const VERSION = '1.1.43 beta';
+const VERSION = '1.1.44 beta';
 const $ = (s) => document.querySelector(s);
 
 // Defaults are the settings proven in real booth sessions (dim each finished sentence, fill the whole sentence as
@@ -15,7 +15,7 @@ const $ = (s) => document.querySelector(s);
 const DEFAULTS = {
   textSize: 18, said: 'sent', guide: 'fill', span: 'sentence', overlap: 'auto', theme: 'dark',
   engine: 'device', micSource: 'builtin', marks: 'all',
-  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'flow', markStrength: 'faint', offNotice: 'off', fade: 'fast', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
+  ttsUnit: 'sentence', ttsVoice: 'android:', ttsRate: 1, linesAbove: 5, scrollEvery: 's1', scrollStyle: 'flow', markStrength: 'faint', offNotice: 'off', fade: 'fast', paraNext: 'overlap', showRate: false, saveTakes: false, debug: false, useMyVo: true, hlColor: 'y', textFrac: null, sideFrac: null, lastProject: null,
   view: 'auto', uiScale: 100, uiText: 100,
 };
 const settings = store.loadSettings(DEFAULTS);
@@ -32,6 +32,7 @@ if (settings.guide === 'off') settings.span = 'off';
   if (settings.scrollStyle === 'pause' || settings.scrollStyle === 'step') settings.scrollStyle = 'slow';
   settings.markStrength = 'faint'; settings.offNotice = 'off'; // 1.1.41: settings removed
   if (settings.fade !== 'slow') settings.fade = 'fast';
+  if (!['overlap', 'pause', 'end'].includes(settings.paraNext)) settings.paraNext = 'overlap';
   if (JSON.stringify(settings) !== was) store.saveSettings(settings);
 }
 if (settings.voiceURI !== undefined) { settings.ttsVoice = 'android:' + settings.voiceURI; delete settings.voiceURI; }
@@ -375,51 +376,8 @@ function autoNext() {
   if (want !== autoN && now - autoT > 400) { autoN += Math.sign(want - autoN); autoT = now; }
   return autoN;
 }
-// Pauses after punctuation. When the guide reaches ahead (Guide overlap), a word followed by punctuation costs
-// extra, since you pause there and the recognizer's delay is used up by the pause. Starting weights, in words:
-// comma ½, dash ¾, full stop / ? / ! / ; / : 1. With Automatic overlap the app learns your own pauses: each time it
-// hears you move on by exactly one word at a normal speed, it times the gap since the word before, takes away how
-// long the new word takes to say at your pace, and files what's left under the punctuation it followed. Retakes,
-// jumps, bursts of several words heard at once and stops of more than 3 s are left out, so rereading a line never
-// counts as a pause. After 10 measurements of a kind, the middle of your last 40 replaces the starting weight,
-// measured against your gaps between plain words.
-const PCLASS = (text) => /(—|–|--|…|\.\.\.)["'”’)\]]*$/.test(text) ? 'dash' : /[.!?;:]["'”’)\]]*$/.test(text) ? 'stop' : /,["'”’)\]]*$/.test(text) ? 'comma' : '';
-const PDEF = { comma: 0.5, dash: 0.75, stop: 1 };
-const PKEY = 'vo-prompter-pauses';
-let pauses = (() => { try { return JSON.parse(localStorage.getItem(PKEY) || '{}') || {}; } catch (e) { return {}; } })();
-let pauseSave = 0;
-const pclassOf = (u) => { const un = model.units[u]; if (!un) return ''; const tok = model.tokens[un.ti]; return tok && u === tok.u1 - 1 ? PCLASS(tok.text) : ''; };
-const median = (a) => { const b = [...a].sort((x, y) => x - y); return b[b.length >> 1]; };
-const pm = { pos: -1, t: 0, run: false }; // run: pm.t is when the word before pm.pos was heard on its own
-function pauseHeard() {
-  if (!model) return;
-  const now = performance.now(), p = follower.pos;
-  if (p === pm.pos) return;
-  const step = p - pm.pos, dt = (now - pm.t) / 1000;
-  if (step === 1 && pm.run && dt < 3 && listening) {
-    const rate = follower.sylRate(), un = model.units[p - 1];
-    if (rate && un) {
-      const gap = dt - (un.syl || 1) / rate, k = pclassOf(p - 2) || 'none';
-      if (gap > -0.5 && gap < 2.5) {
-        (pauses[k] = pauses[k] || []).push(+gap.toFixed(3)); if (pauses[k].length > 40) pauses[k].shift();
-        clearTimeout(pauseSave); pauseSave = setTimeout(() => { try { localStorage.setItem(PKEY, JSON.stringify(pauses)); } catch (e) { /* full */ } }, 2000);
-      }
-    }
-  }
-  pm.run = step >= 1 && step <= 2; // a jump back or ahead (retake, pickup) breaks the run; the next gap isn't used
-  pm.pos = p; pm.t = now;
-}
-// extra cost, in words, of the pause after a word with this punctuation
-function pauseWeight(k) {
-  if (!k) return 0;
-  if (settings.overlap !== 'auto') return PDEF[k];
-  const a = pauses[k], base = pauses.none;
-  if (!a || a.length < 10 || !base || base.length < 10) return PDEF[k];
-  const rate = follower.sylRate(); if (!rate) return PDEF[k];
-  const wordsPerSec = rate / Math.max(1, follower.cumSyl[model.N] / Math.max(1, model.N));
-  return Math.max(0, Math.min(2.5, (median(a) - median(base)) * wordsPerSec));
-}
-// The next paragraph also lights when you pause at the end of this one: at most 2 words still unheard and the mic
+try { localStorage.removeItem('vo-prompter-pauses'); } catch (e) { /* none */ } // pause learning of 1.1.42–1.1.43
+// Next paragraph, "When you pause at the end": the next paragraph lights when you pause at the end of this one: at most 2 words still unheard and the mic
 // quiet for 0.2 s (the recognizer often holds back the last word of a phrase until well into the pause). It stays
 // lit while you start the next paragraph; reading back (a retake) drops it again. On-device engine only (the
 // online one doesn't report the mic level).
@@ -436,16 +394,12 @@ function pauseCross() {
   cross = { from: u, end: e + 1, next: units[e + 1].ti };
   return cross.next;
 }
-// how far the guide reaches: walk on from the word you're at, spending the overlap in words, each pause costing
-// its weight; never past the end of the paragraph you're in (the next one lights only once its last word is heard)
+// how far the guide reaches: the overlap in words on from the word you're at; with Next paragraph set to wait
+// (pause or last word), never past the end of the paragraph you're in
 function reachAhead(u, budget) {
-  const { units, tokens } = model, N = model.N, pid = tokens[units[u].ti].pid;
-  let left = budget, v = u;
-  while (v + 1 < N && tokens[units[v + 1].ti].pid === pid) {
-    const cost = 1 + pauseWeight(pclassOf(v));
-    if (cost > left + 1e-6) break;
-    left -= cost; v++;
-  }
+  const { units, tokens } = model, N = model.N;
+  let v = Math.min(N - 1, u + Math.max(0, Math.round(budget)));
+  if (settings.paraNext !== 'overlap') { const pid = tokens[units[u].ti].pid; while (v > u && tokens[units[v].ti].pid !== pid) v--; }
   return units[v].ti;
 }
 function updateClasses() { dirtyAll = true; }
@@ -510,7 +464,7 @@ function guideRange() {
     c = units[Math.min(shown.pos || 0, model.N - 1)].ti;
     a = Math.max(0, c - (listening && byWord ? ov.back : 0));
     b = byWord ? Math.min(T - 1, c + ov.fwd) : listening ? reachAhead(Math.min(shown.pos || 0, model.N - 1), ov.next) : c;
-    if (!byWord && listening) b = Math.max(b, pauseCross());
+    if (!byWord && listening && settings.paraNext === 'pause') b = Math.max(b, pauseCross());
   }
   if (span === 'phrase') {
     let t1 = c, n = 0;
@@ -827,8 +781,8 @@ function onFollow(e) {
 function engineFor(kind) {
   if (!engines[kind]) {
     const cb = {
-      partial: (t) => { follower.input(t, false); lagHeard(); pauseHeard(); logTake(t, 0); if (settings.debug) dbg('heard', `partial ${t.split(' ').length} words → spot ${follower.pos}`); },
-      final: (t) => { follower.input(t, true); lagHeard(); pauseHeard(); logTake(t, 1); if (settings.debug) dbg('heard', `final ${t ? t.split(' ').length : 0} words → spot ${follower.pos}`); },
+      partial: (t) => { follower.input(t, false); lagHeard(); logTake(t, 0); if (settings.debug) dbg('heard', `partial ${t.split(' ').length} words → spot ${follower.pos}`); },
+      final: (t) => { follower.input(t, true); lagHeard(); logTake(t, 1); if (settings.debug) dbg('heard', `final ${t ? t.split(' ').length : 0} words → spot ${follower.pos}`); },
       level: (rms) => { lagLevel(rms); const v = Math.min(1, Math.sqrt(rms) * 3.2); $('#micDot').style.transform = `scale(${1 + v * 0.9})`; },
       error: (msg) => { dbg('mic', 'error ' + msg); toast(msg, 5000); stopListening(); },
       dropped: () => micDropped(),
@@ -2103,7 +2057,14 @@ function newTake() {
     note: 'events: [ms after recording started, recognized text, final (1) or partial (0), reading spot (word unit) after it]', events: take.events }), 'application/json');
   take.onStart = (type) => { take.t0 = performance.now(); take.type = type; curTake = take; renderMic(); writeLog(); };
   take.onData = (blob, type) => { take.type = type; write('.part' + String(take.n++).padStart(5, '0'), blob, type); if (take.n % 3 === 0) writeLog(); };
-  take.onStop = () => { writeLog(); take.chain.then(() => { if (!take.failed) toast('Test recording saved (Settings → Diagnostics → Test recordings).'); if ($('#dlgTakes').open) renderTakes(); }); };
+  take.onStop = () => {
+    // under 5 seconds (a quick start and stop) isn't worth keeping: what was stored so far is removed
+    if (performance.now() - take.t0 < 5000) {
+      take.chain = take.chain.then(async () => { try { const c = await caches.open(TAKES); for (let i = 0; i < take.n; i++) await c.delete(key('.part' + String(i).padStart(5, '0'))); await c.delete(key('.json')); } catch (e) { /* gone */ } if ($('#dlgTakes').open) renderTakes(); });
+      return;
+    }
+    writeLog(); take.chain.then(() => { if (!take.failed) toast('Test recording saved (Settings → Diagnostics → Test recordings).'); if ($('#dlgTakes').open) renderTakes(); });
+  };
   return take;
 }
 const takeExt = (type) => /mp4/.test(type) ? 'm4a' : /ogg/.test(type) ? 'ogg' : 'webm';
@@ -2242,12 +2203,13 @@ function syncSettingsUI() {
   $('#selMarks').value = settings.marks; $('#selTakes').value = settings.saveTakes ? 'on' : 'off'; $('#selUnit').value = settings.ttsUnit;
   $('#selScrollStyle').value = settings.scrollStyle; $('#selRate').value = settings.showRate ? 'on' : 'off';
   $('#selAbove').value = String(settings.linesAbove); $('#selEvery').value = String(settings.scrollEvery);
-  $('#selFade').value = settings.fade;
+  $('#selFade').value = settings.fade; $('#selPara').value = settings.paraNext;
   // a setting that doesn't apply because of another one is greyed out, row and all
   const na = (row, sel, off) => { $(row).classList.toggle('na', off); $(sel).disabled = off; };
   na('#rowEvery', '#selEvery', settings.scrollStyle === 'flow');
   na('#rowOverlap', '#selOverlap', settings.span === 'off');
   na('#rowFade', '#selFade', settings.span === 'off');
+  na('#rowPara', '#selPara', settings.span === 'off');
   na('#rowMic', '#selMic', settings.engine !== 'device');
   na('#rowTakes', '#selTakes', settings.engine !== 'device');
   $('#sRate').value = settings.ttsRate; $('#oRate').textContent = '×' + (+settings.ttsRate).toFixed(2);
@@ -2311,7 +2273,7 @@ $('#sText').oninput = (e) => {
 };
 $('#sText').onchange = () => { saveSettings(); applySettings(); sizeShells(true); lineMemo = { key: '', slots: [] }; scrollToCurrent(true); };
 bindSel('#selSaid', 'said'); bindSel('#selSpan', 'span'); bindSel('#selOverlap', 'overlap'); bindSel('#selTheme', 'theme');
-bindSel('#selMarks', 'marks'); bindSel('#selFade', 'fade');
+bindSel('#selMarks', 'marks'); bindSel('#selFade', 'fade'); bindSel('#selPara', 'paraNext');
 bindSel('#selScrollStyle', 'scrollStyle');
 $('#selRate').onchange = (e) => { settings.showRate = e.target.value === 'on'; saveSettings(); };
 $('#selTakes').onchange = (e) => { settings.saveTakes = e.target.value === 'on'; saveSettings(); };
@@ -2406,7 +2368,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.ser
 
 // ---------- diagnostics ----------
 async function diagText() {
-  const pick = ['textSize', 'said', 'guide', 'span', 'overlap', 'engine', 'micSource', 'marks', 'linesAbove', 'scrollEvery', 'scrollStyle', 'fade', 'ttsUnit', 'ttsRate'];
+  const pick = ['textSize', 'said', 'guide', 'span', 'overlap', 'engine', 'micSource', 'marks', 'linesAbove', 'scrollEvery', 'scrollStyle', 'fade', 'paraNext', 'ttsUnit', 'ttsRate'];
   const lines = [
     `VO Prompter ${VERSION}`,
     `Browser: ${navigator.userAgent}`,
@@ -2418,7 +2380,6 @@ async function diagText() {
     `Recordings: ${settings.saveTakes ? 'on' : 'off'} · recorder ${typeof MediaRecorder === 'undefined' ? 'missing' : ['audio/webm;codecs=opus', 'audio/mp4'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'no supported type'}${engine && engine.recError ? ' · last error: ' + engine.recError : ''} · saved: ${(await listTakes()).length}`,
     `Video: ${hasVideo() ? (() => { const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null; return `${video.videoWidth}x${video.videoHeight} ready ${video.readyState} at ${video.currentTime.toFixed(1)}s ×${video.playbackRate.toFixed(2)} ${video.paused ? 'paused' : 'playing'}${q ? ` frames ${q.totalVideoFrames} dropped ${q.droppedVideoFrames}` : ''}${video.error ? ' error ' + video.error.code : ''} · can play h264: ${video.canPlayType('video/mp4; codecs="avc1.640032"') || 'no'}`; })() : 'none'}`,
     `Recognizer delay: ${lagM.s.length >= 3 ? lagM.est.toFixed(2) + ' s measured (' + lagM.s.length + ' times)' : 'not measured yet, using ' + (LAG[settings.engine] || 0.4) + ' s'} · pace ${follower ? follower.sylRate().toFixed(1) : '0'} syllables/s${settings.overlap === 'auto' ? ' · overlap now ' + autoN + ' words' : ''}`,
-    `Pauses learned (s, middle of last 40, count): ${['none', 'comma', 'dash', 'stop'].map((k) => `${k} ${pauses[k] && pauses[k].length ? median(pauses[k]).toFixed(2) : '-'} (${pauses[k] ? pauses[k].length : 0})`).join(' · ')}${model && follower.sylRate() ? ' · weights now ' + ['comma', 'dash', 'stop'].map((k) => k + ' ' + pauseWeight(k).toFixed(2)).join(' ') : ''}`,
     `Recent errors: ${diag.errors.length ? '\n  ' + diag.errors.join('\n  ') : 'none'}`,
   ];
   return lines.join('\n');

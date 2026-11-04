@@ -131,6 +131,8 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .w { border-radius: 4px; cursor: pointer; --txt: var(--fg); --guide: var(--accent);
   transition: color .35s ease, background-color .6s ease, box-shadow .3s ease, text-decoration-color .8s ease; }
 .g { border-radius: 0; --guide: var(--accent); transition: color .35s ease, background-color .6s ease, box-shadow .3s ease; }
+/* Guide fade: Slow matches the dimming of words you've read */
+.fade-slow .w, .fade-slow .g { transition: color 1.6s ease, background-color 1.6s ease, box-shadow 1.6s ease, text-decoration-color 1.6s ease; }
 /* calm: things that change while you read fade instead of flashing */
 .said-hl .w.said, .said-hl .g.said { transition: background-color 1.4s ease; }
 .said-dim .w.said, .said-sent .w.done, .said-dim .g.said, .said-sent .g.done { transition: color 1.6s ease; }
@@ -236,6 +238,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
 .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; }
 .row:has(> select) { grid-template-columns: minmax(6.5em, 1fr) minmax(0, max-content); }
 .row > select { min-width: 0; width: 100%; text-overflow: ellipsis; }
+.row.na { opacity: .42; }
+.row.na select { pointer-events: none; }
 .row small { grid-column: 1 / -1; color: var(--muted); }
 .row input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); touch-action: pan-y; }
 .rwrap { grid-column: 1 / -1; position: relative; }
@@ -379,14 +383,13 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
       <div class="size-preview">The quick brown fox jumps over the lazy dog.</div>
       <div class="row"><label for="selSaid">Words you've read</label><select id="selSaid"><option value="dim">Dim word by word</option><option value="sent">Dim each sentence when finished</option><option value="off">No change</option></select></div>
       <div class="row"><label for="selSpan">Guide covers</label><select id="selSpan"><option value="off">Off</option><option value="line">Whole line</option><option value="sentence">Whole sentence</option><option value="para">Whole paragraph</option></select></div>
-      <div class="row"><label for="selOverlap">Guide overlap</label><select id="selOverlap"><option value="some">A little</option><option value="more">More</option></select>
-        <small>The app hears each word about half a second after you say it, so as you near the end of a line, sentence or paragraph, the guide reaches into the next one early and the word you're saying stays inside it. A little: from 3 words before the end. More: from 5 words before.</small></div>
+      <div class="row" id="rowOverlap"><label for="selOverlap">Guide overlap</label><select id="selOverlap"><option value="auto">Automatic (your pace)</option><option value="some">3 words</option><option value="more">5 words</option></select></div>
+      <div class="row" id="rowFade"><label for="selFade">Guide fade</label><select id="selFade"><option value="fast">Fast</option><option value="slow">Slow</option></select></div>
       <div class="row"><label for="selAbove">Lines kept above</label><select id="selAbove"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select></div>
-      <div class="row"><label for="selEvery">Scroll every</label><select id="selEvery"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option><option value="5">5 lines</option><option value="s1">1 sentence</option><option value="s2">2 sentences</option><option value="s3">3 sentences</option></select>
-        <small>The page waits until you've read this many lines or sentences before it moves. With sentences, the new sentence moves to your reading position; a sentence too long to fit still scrolls before you run out of room.</small></div>
       <div class="row"><label for="selScrollStyle">Scroll style</label><select id="selScrollStyle"><option value="slow">Slow and steady</option><option value="flow">Continuous (for flowing reads)</option></select>
         <small>Slow and steady: drifts up gently every few lines or sentences (Scroll every), and always keeps a couple of lines ahead in view. Continuous: the line you're reading stays at the reading position and the text moves up smoothly at your pace, like a teleprompter, so the next lines keep coming; best for long flowing reads such as audiobooks (Scroll every doesn't apply).</small></div>
-      <div class="row"><label for="selRate">Video speed label</label><select id="selRate"><option value="off">Off</option><option value="on">On</option></select></div>
+      <div class="row" id="rowEvery"><label for="selEvery">Scroll every</label><select id="selEvery"><option value="1">1 line</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option><option value="5">5 lines</option><option value="s1">1 sentence</option><option value="s2">2 sentences</option><option value="s3">3 sentences</option></select>
+        <small>The page waits until you've read this many lines or sentences before it moves. With sentences, the new sentence moves to your reading position; a sentence too long to fit still scrolls before you run out of room.</small></div>
       <div class="row"><label for="selTheme">Theme</label><select id="selTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">Match the device</option></select></div>
     </fieldset>
     <fieldset>
@@ -401,14 +404,10 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
       <legend>Following your voice</legend>
       <div class="row"><label for="selEngine">Speech engine</label><select id="selEngine"><option value="device">On this device (private, offline)</option><option value="google">Online speech (your browser’s service)</option></select>
         <small id="engineNote"></small></div>
-      <div class="row"><label for="selMic">Mic</label><select id="selMic"><option value="builtin">Built-in mic</option><option value="default">Default mic</option></select>
+      <div class="row" id="rowMic"><label for="selMic">Mic</label><select id="selMic"><option value="builtin">Built-in mic</option><option value="default">Default mic</option></select>
         <small>The built-in mic keeps Bluetooth earbuds out of phone-call mode. Applies to the on-device engine.</small></div>
-      <div class="row"><label for="selTakes">Save test recordings</label><select id="selTakes"><option value="off">Off</option><option value="on">On</option></select>
-        <small>Also saves what the mic hears while listening, plus a log of what the app heard and where it put you, so the app can be tested on real reads. Files → Test recordings. On-device engine only; about 0.5 MB a minute.</small></div>
       <div class="row"><label for="selMarks">Mistake marks</label><select id="selMarks"><option value="skips">Skipped words</option><option value="all">Skips + possible misreads</option><option value="off">Off</option></select>
         <small>Skipped words get a red wavy line. Possible misreads (dotted) are often the recognizer's mistake, not yours.</small></div>
-      <div class="row"><label for="selOff">Off-script notice</label><select id="selOff"><option value="off">Off</option><option value="subtle">Subtle</option></select></div>
-      <div class="row"><label for="selMarkStr">Mark strength</label><select id="selMarkStr"><option value="faint">Faint</option><option value="medium">Medium</option><option value="strong">Strong</option></select></div>
     </fieldset>
     <fieldset>
       <legend>Listen mode</legend>
@@ -419,12 +418,19 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
       <div class="btns"><button class="btn" id="btnTestVoice">Test voice</button></div>
     </fieldset>
     <fieldset>
-      <legend>App</legend>
-      <p class="note" id="aboutLine"></p>
+      <legend>Diagnostics</legend>
+      <div class="row"><label for="selRate">Video speed label</label><select id="selRate"><option value="off">Off</option><option value="on">On</option></select></div>
+      <div class="row" id="rowTakes"><label for="selTakes">Save test recordings</label><select id="selTakes"><option value="off">Off</option><option value="on">On</option></select>
+        <small>Also saves what the mic hears while listening, plus a log of what the app heard and where it put you, so the app can be tested on real reads. Files → Test recordings. On-device engine only; about 0.5 MB a minute.</small></div>
       <div class="row"><label for="selDebug">Debug log</label><select id="selDebug"><option value="off">Off</option><option value="on">On</option></select>
         <small>While on, the app notes what voices, video and the speech engine do, with times, so a problem can be traced. Turn it on, reproduce the problem, then Copy debug log and paste it into a message. No script words, file names or account details are logged.</small></div>
-      <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><button class="btn" id="btnDbg" hidden>Copy debug log</button><a class="btn" href="../THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Licenses</a></div>
+      <div class="btns"><button class="btn" id="btnDiag">Copy diagnostics</button><button class="btn" id="btnDbg" hidden>Copy debug log</button></div>
       <p class="note">Diagnostics are app details for troubleshooting (version, settings, device, recent errors). They never include your script's words, file names or video.</p>
+    </fieldset>
+    <fieldset>
+      <legend>App</legend>
+      <p class="note" id="aboutLine"></p>
+      <div class="btns"><a class="btn" href="../THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">Licenses</a></div>
       <div class="btns"><button class="btn danger" id="btnWipe">Remove app data…</button></div>
       <p class="note">Removes all scripts, videos, settings and the speech model from this device (shared with the main VO Prompter app, so it clears that too), then shows how to remove the icon.</p>
     </fieldset>

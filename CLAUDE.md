@@ -14,6 +14,9 @@ contents, highlights and bookmarks. No build step: plain ES modules in js/, styl
 - Experimental changes go to the beta first (beta/, built with tools/make_beta.py from a dev checkout). The main app
   changes only when the owner says so.
 - Don't change the IndexedDB version (main and beta share the database). Add data inside project records.
+- Before changing code, say what you'll change, why, and the expected effect, then wait for the owner's OK. Small
+  fixes inside an approved plan don't need asking again. After each change, report what changed and the before/after
+  measurement. Show the diff when asked.
 - Replies to the owner: direct, concise, bulleted; em-dashes without spaces, sparingly; no placating language.
 
 ## Layout

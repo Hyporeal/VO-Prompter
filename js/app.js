@@ -6,7 +6,7 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
-import { canConvert, PATH as QPATH, planQuick, encodePiece, checkPiece, joinPieces, measure as measureConv } from './convert.js';
+import { canConvert, PATH as QPATH, planQuick, softDecodeSupported, encodePiece, checkPiece, joinPieces, measure as measureConv } from './convert.js';
 
 const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
@@ -2130,7 +2130,7 @@ async function startQuick(mode) {
   try {
     for (let i = job.done; i < n; i++) {
       upd(i, 0);
-      let blob, t, errors = 0, stalls = 0;
+      let blob, t, errors = 0, stalls = 0, soft = !!job.soft;
       for (;;) {
         // a piece that stops making progress (Android can take the encoder away from a page in the background
         // without an error) is started again once the app is in front
@@ -2140,12 +2140,22 @@ async function startQuick(mode) {
         const onVis = () => { ql(document.hidden ? 'app went to background' : 'app back in front'); if (document.hidden) stalls = Math.max(0, stalls - 1); if (!document.hidden) last = performance.now() - (STALL - STALL_BACK); };
         document.addEventListener('visibilitychange', onVis);
         const dog = setInterval(() => { if (!document.hidden && performance.now() - last > STALL) { stalled = true; inner.abort(); } }, 1000);
-        t = performance.now(); ql(`piece ${i + 1}/${n} start ${job.bounds[i].toFixed(1)}-${job.bounds[i + 1].toFixed(1)}s ${job.mode}${errors ? ' retry ' + errors : ''}${document.hidden ? ' (hidden)' : ''}`);
+        t = performance.now(); ql(`piece ${i + 1}/${n} start ${job.bounds[i].toFixed(1)}-${job.bounds[i + 1].toFixed(1)}s ${job.mode}${soft ? ' software' : ''}${errors ? ' retry ' + errors : ''}${document.hidden ? ' (hidden)' : ''}`);
         let lastF = 0;
-        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { signal: inner.signal, onProgress: (f) => { last = performance.now(); lastF = f; upd(i, f); } }); ql(`piece ${i + 1} encoded in ${((performance.now() - t) / 1000).toFixed(0)}s, ${(blob.size / 1048576).toFixed(1)} MB`); break; }
+        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { soft, signal: inner.signal, onProgress: (f) => { last = performance.now(); lastF = f; upd(i, f); } }); ql(`piece ${i + 1} encoded in ${((performance.now() - t) / 1000).toFixed(0)}s, ${(blob.size / 1048576).toFixed(1)} MB`); break; }
         catch (e) {
           if (ac.signal.aborted) throw e;
-          if (stalled && ++stalls > 4) { const at = job.bounds[i] + lastF * (job.bounds[i + 1] - job.bounds[i]); throw new Error(`this device’s encoder keeps getting stuck at ${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')} in the video`); }
+          if (stalled && ++stalls >= 2) {
+            const at = job.bounds[i] + lastF * (job.bounds[i + 1] - job.bounds[i]), mmss = `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')}`;
+            // the same spot sticking twice: the device's own decoder can't read it, so try the software one for this piece
+            if (!soft) {
+              const ok = await softDecodeSupported(rec.blob).catch(() => false);
+              ql(`piece ${i + 1} sticks at ${mmss}; software decoding ${ok ? 'available, using it for this piece' : 'not offered by this browser'}`);
+              if (!ok) throw new Error(`this device can’t read the video past ${mmss} (its decoder gets stuck there, and this browser has no software decoder to fall back on)`);
+              soft = true; job.soft = true; stalls = 0; show(`Piece ${i + 1} of ${n}: reading it the slower way…`); continue;
+            }
+            throw new Error(`this device gets stuck at ${mmss} in the video, even with software decoding`);
+          }
           if (stalled) { ql(`piece ${i + 1} stalled at ${Math.round(lastF * 100)}%, starting again`); show(`Starting piece ${i + 1} of ${n} again…`); continue; }
           if (++errors > 3) throw e;
           ql(`piece ${i + 1} failed at ${Math.round(lastF * 100)}%: ${e.name || 'error'} ${String(e.message || '').slice(0, 80)}`);

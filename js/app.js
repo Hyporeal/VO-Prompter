@@ -6,6 +6,7 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
+import { quickJumpCopy } from './convert.js';
 
 const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
@@ -122,7 +123,7 @@ async function syncWake() {
   } catch (e) { /* not allowed right now; tried again shortly */ }
   finally { wakeBusy = false; }
 }
-const wantAwake = () => { wakeWanted = listening || ttsBusy() || (hasVideo() && !video.paused) || (hasVideo() && follow && (listening || !!tts)); syncWake(); };
+const wantAwake = () => { wakeWanted = !!conv || listening || ttsBusy() || (hasVideo() && !video.paused) || (hasVideo() && follow && (listening || !!tts)); syncWake(); };
 
 // ---------- settings → page ----------
 function applySettings() {
@@ -2044,8 +2045,48 @@ async function renderTakes() {
 const takeSize = new Map();
 $('#fTakesAll').onclick = () => confirmDo('Delete all recordings?', 'Every saved recording and its log will be removed from this device.', 'Delete all', async () => { try { await caches.delete(TAKES); } catch (e) { /* ignore */ } renderTakes(); });
 
+// ---------- quick-jump copy of the video ----------
+let conv = null; // { ac, pid, p }
+async function startQuick() {
+  if (!project || !project.videoName || conv) return;
+  const pid = project.id;
+  let rec;
+  try { rec = await store.getVideo(pid); } catch (e) { /* missing */ }
+  if (!rec || !rec.blob) { toast('The video isn’t on this device.'); return; }
+  conv = { ac: new AbortController(), pid, p: 0 };
+  $('#convPill').hidden = false; $('#convLbl').textContent = 'Preparing video 0%'; wantAwake(); renderFiles();
+  const t0 = Date.now();
+  try {
+    const out = await quickJumpCopy(rec.blob, { signal: conv.ac.signal, onProgress: (p) => {
+      conv.p = p;
+      const left = p > 0.02 ? Math.round((Date.now() - t0) / p * (1 - p) / 60000) : null;
+      const txt = `Preparing video ${Math.round(p * 100)}%` + (left !== null ? ` · about ${left} min left` : '');
+      $('#convLbl').textContent = txt; $('#blackLbl').textContent = txt;
+    } });
+    const name = rec.name.replace(/(\.[^.]+)?$/, ' (quick jumps).mp4');
+    const file = new File([out], name, { type: 'video/mp4' });
+    await store.putVideo(pid, file);
+    const p = project && project.id === pid ? project : await store.getProject(pid);
+    if (p) { p.videoName = name; p.videoQuick = true; await store.putProject(p); }
+    if (project && project.id === pid) { const t = video.currentTime; setVideoSrc(file); video.addEventListener('loadedmetadata', () => { video.currentTime = t; }, { once: true }); }
+    toast(`Video ready: jumps are quick now (${Math.round(out.size / 1048576)} MB, ${Math.round((Date.now() - t0) / 60000)} min).`, 6000);
+  } catch (e) {
+    if (!conv.ac.signal.aborted) { noteError('quick copy: ' + (e.message || e)); toast('Couldn’t prepare the video: ' + (e.message || e), 7000); }
+    else toast('Stopped. The video is as it was.');
+  } finally {
+    conv = null; $('#convPill').hidden = true; $('#blackout').hidden = true; wantAwake();
+    if ($('#dlgFiles').open) renderFiles();
+  }
+}
+$('#fQuick').onclick = () => { $('#dlgFiles').close(); startQuick(); };
+$('#convStop').onclick = () => { if (conv) conv.ac.abort(); };
+$('#convBlack').onclick = () => { $('#blackLbl').textContent = $('#convLbl').textContent; $('#blackout').hidden = false; };
+$('#blackout').onclick = () => { $('#blackout').hidden = true; };
+
 function renderFiles() {
   const has = !!project;
+  $('#fQuick').hidden = !(project && project.videoName && !project.videoQuick) || !!conv || typeof VideoEncoder === 'undefined';
+  $('#fQuickNote').hidden = $('#fQuick').hidden;
   $('#fOpenVideo').disabled = !has;
   $('#fOpenVideo').textContent = project && project.videoName ? 'Replace video…' : 'Add video…';
   $('#fRemoveVideo').hidden = !(project && project.videoName);

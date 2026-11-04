@@ -6,7 +6,7 @@ import { PiperSpeaker, PIPER_VOICES, voiceIsDownloaded } from './piper.js';
 import * as store from './store.js';
 import { writeZip } from './zip.js';
 import { recognizeFile, mapRecording, coverage, VoSpeaker } from './vo.js';
-import { quickJumpCopy } from './convert.js';
+import { canConvert, planQuick, encodePiece, joinPieces, measure as measureConv } from './convert.js';
 
 const VERSION = '1.1.28';
 const $ = (s) => document.querySelector(s);
@@ -1276,6 +1276,7 @@ async function loadProject(p) {
   if (p.videoName) {
     try { const v = await store.getVideo(p.id); if (v && v.blob) setVideoSrc(v.blob); } catch (e) { /* missing */ }
     if (!hasVideo()) toast('The video for this project isn’t on this device anymore. Add it again in Files.');
+    else if (p.quickJob && !conv) toast(`Preparing the video is paused (${p.quickJob.done} of ${p.quickJob.bounds.length - 1} pieces saved). Files → Resume carries on.`, 6000);
   }
   requestAnimationFrame(() => { syncStable(); settleScroll(currentEl()); });
   try { await store.putProject(project); } catch (e) { /* storage full */ }
@@ -1393,6 +1394,7 @@ async function updateScript(file) {
 async function openVideoFile(file) {
   if (!project) { toast('Open a project first.'); return; }
   setVideoSrc(file);
+  await resetQuick(project.id);
   project.videoName = file.name;
   saveProject();
   try { await store.putVideo(project.id, file); }
@@ -2045,48 +2047,169 @@ async function renderTakes() {
 const takeSize = new Map();
 $('#fTakesAll').onclick = () => confirmDo('Delete all recordings?', 'Every saved recording and its log will be removed from this device.', 'Delete all', async () => { try { await caches.delete(TAKES); } catch (e) { /* ignore */ } renderTakes(); });
 
-// ---------- quick-jump copy of the video ----------
-let conv = null; // { ac, pid, p }
-async function startQuick() {
-  if (!project || !project.videoName || conv) return;
+// ---------- quick-jump copy of the video (made in pieces, so it can resume) ----------
+let conv = null; // the run: { ac, pid, job, lbl }
+let measuring = null; // { ac, pid }
+const vidKey = (rec) => `${rec.blob.size}|${rec.blob.lastModified || 0}|${rec.name}`;
+async function editProj(pid, fn) {
+  if (project && project.id === pid) { fn(project); await saveProject(); return; }
+  const p = await store.getProject(pid); if (p) { fn(p); await store.putProject(p); }
+}
+const fmtLeft = (s) => { if (!isFinite(s)) return ''; const m = Math.max(1, Math.round(s / 60)); return m >= 90 ? `about ${Math.floor(m / 60)} h ${m % 60} min` : `about ${m} min`; };
+const JOIN = 0.005; // joining takes about this many seconds per second of video
+// estimated seconds for a whole run of a mode, from the sample timed on this device
+function estFor(p, mode) {
+  const e = p.quickEst && p.quickEst.m && p.quickEst.m[mode];
+  if (!e) return null;
+  return { secs: p.quickEst.n * e.perPiece + p.quickEst.dur * (e.perSec + JOIN), mb: e.bytesPerSec * p.quickEst.dur / 1048576 };
+}
+// work seconds per second of video for a job: what it has actually taken so far, else the sample
+function jobRate(p, job) {
+  if (job.vdone >= 30 && job.spent > 0) return job.spent / job.vdone;
+  const e = p.quickEst && p.quickEst.m && p.quickEst.m[job.mode];
+  return e ? e.perSec + e.perPiece / 120 : null;
+}
+async function measureQuick() {
+  if (!project || !project.videoName || project.videoQuick || conv || measuring || !canConvert()) return;
   const pid = project.id;
-  let rec;
-  try { rec = await store.getVideo(pid); } catch (e) { /* missing */ }
-  if (!rec || !rec.blob) { toast('The video isn’t on this device.'); return; }
-  conv = { ac: new AbortController(), pid, p: 0 };
-  $('#convPill').hidden = false; $('#convLbl').textContent = 'Preparing video 0%'; wantAwake(); renderFiles();
-  const t0 = Date.now();
+  let rec; try { rec = await store.getVideo(pid); } catch (e) { /* missing */ }
+  if (!rec || !rec.blob) return;
+  const key = vidKey(rec);
+  if (project.quickEst && project.quickEst.key === key) return;
+  measuring = { ac: new AbortController(), pid };
+  renderFiles();
   try {
-    const out = await quickJumpCopy(rec.blob, { signal: conv.ac.signal, onProgress: (p) => {
-      conv.p = p;
-      const left = p > 0.02 ? Math.round((Date.now() - t0) / p * (1 - p) / 60000) : null;
-      const txt = `Preparing video ${Math.round(p * 100)}%` + (left !== null ? ` · about ${left} min left` : '');
-      $('#convLbl').textContent = txt; $('#blackLbl').textContent = txt;
-    } });
+    const plan = await planQuick(rec.blob);
+    const m = await measureConv(rec.blob, plan, ['std', 'sharp'], measuring.ac.signal);
+    await editProj(pid, (p) => { p.quickEst = { key, dur: plan.dur, n: plan.bounds.length - 1, m }; });
+  } catch (e) { if (!measuring.ac.signal.aborted) dbg('video', 'sample timing failed: ' + (e.name || 'error')); }
+  finally { measuring = null; if ($('#dlgFiles').open) renderFiles(); }
+}
+const whenVisible = () => new Promise((res) => {
+  if (!document.hidden) { setTimeout(res, 500); return; }
+  const f = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', f); setTimeout(res, 1000); } };
+  document.addEventListener('visibilitychange', f);
+});
+async function startQuick(mode) {
+  if (!project || !project.videoName || conv) return;
+  if (measuring) measuring.ac.abort();
+  const pid = project.id;
+  let rec; try { rec = await store.getVideo(pid); } catch (e) { /* missing */ }
+  if (!rec || !rec.blob) { toast('The video isn’t on this device.'); return; }
+  const key = vidKey(rec);
+  let job = project.quickJob;
+  if (!job || job.key !== key || (mode && job.mode !== mode)) {
+    await store.deletePieces(pid);
+    let plan; try { plan = await planQuick(rec.blob); } catch (e) { toast('Couldn’t read the video: ' + (e.message || e), 6000); return; }
+    job = { key, mode: mode || 'std', bounds: plan.bounds, done: 0, spent: 0, vdone: 0 };
+    await editProj(pid, (p) => { p.quickJob = job; });
+  }
+  const ac = new AbortController();
+  conv = { ac, pid, job };
+  const n = job.bounds.length - 1, dur = job.bounds[n];
+  const show = (txt) => { $('#convLbl').textContent = txt; $('#blackLbl').textContent = txt; };
+  $('#convPill').hidden = false; wantAwake(); renderFiles();
+  const upd = (i, f) => {
+    const p = project && project.id === pid ? project : null;
+    const rate = jobRate(p || { quickEst: null }, job);
+    const piece = job.bounds[i + 1] - job.bounds[i], vdoneNow = job.vdone + piece * f;
+    const left = rate ? rate * (dur - vdoneNow) + dur * JOIN : NaN;
+    show(`Preparing video ${Math.floor(vdoneNow / dur * 100)}% · piece ${i + 1} of ${n}` + (isFinite(left) ? ` · ${fmtLeft(left)} left` : ''));
+  };
+  try {
+    for (let i = job.done; i < n; i++) {
+      upd(i, 0);
+      const t = performance.now();
+      let blob;
+      for (let tries = 0; ; tries++) {
+        try { blob = await encodePiece(rec.blob, job.bounds[i], job.bounds[i + 1], job.mode, { signal: ac.signal, onProgress: (f) => upd(i, f) }); break; }
+        catch (e) {
+          if (ac.signal.aborted || tries >= 3) throw e;
+          dbg('video', `piece ${i + 1} failed (${e.name || 'error'}), trying again`);
+          await whenVisible();
+        }
+      }
+      await store.putPiece(pid, i, blob);
+      job.done = i + 1; job.spent += (performance.now() - t) / 1000; job.vdone += job.bounds[i + 1] - job.bounds[i];
+      await editProj(pid, (p) => { p.quickJob = job; });
+    }
+    show('Joining the pieces…');
+    const pieces = [];
+    for (let i = 0; i < n; i++) {
+      const b = await store.getPiece(pid, i);
+      if (!b) { job.done = i; await editProj(pid, (p) => { p.quickJob = job; }); throw new Error(`piece ${i + 1} is missing; Resume makes it again`); }
+      pieces.push(b);
+    }
+    const out = await joinPieces(rec.blob, pieces, job.bounds, { signal: ac.signal, onProgress: (f) => show(`Joining the pieces ${Math.floor(f * 100)}%`) });
     const name = rec.name.replace(/(\.[^.]+)?$/, ' (quick jumps).mp4');
     const file = new File([out], name, { type: 'video/mp4' });
     await store.putVideo(pid, file);
-    const p = project && project.id === pid ? project : await store.getProject(pid);
-    if (p) { p.videoName = name; p.videoQuick = true; await store.putProject(p); }
-    if (project && project.id === pid) { const t = video.currentTime; setVideoSrc(file); video.addEventListener('loadedmetadata', () => { video.currentTime = t; }, { once: true }); }
-    toast(`Video ready: jumps are quick now (${Math.round(out.size / 1048576)} MB, ${Math.round((Date.now() - t0) / 60000)} min).`, 6000);
+    await editProj(pid, (p) => { p.videoName = name; p.videoQuick = job.mode; delete p.quickJob; delete p.quickEst; });
+    await store.deletePieces(pid);
+    if (project && project.id === pid) { const t = video.currentTime, play = !video.paused; setVideoSrc(file); video.addEventListener('loadedmetadata', () => { video.currentTime = t; if (play) video.play().catch(() => {}); }, { once: true }); }
+    toast(`Video ready: jumps are quick now (${Math.round(out.size / 1048576)} MB${job.spent > 60 ? `, ${Math.round(job.spent / 60)} min of work` : ''}).`, 6000);
   } catch (e) {
-    if (!conv.ac.signal.aborted) { noteError('quick copy: ' + (e.message || e)); toast('Couldn’t prepare the video: ' + (e.message || e), 7000); }
-    else toast('Stopped. The video is as it was.');
+    if (ac.signal.aborted) toast(`Paused with ${job.done} of ${n} pieces saved. Files → Resume carries on from there.`, 6000);
+    else { noteError('quick copy: ' + (e.message || e)); toast('Couldn’t prepare the video: ' + (e.message || e) + (job.done ? `. ${job.done} of ${n} pieces are saved; Files → Resume tries again.` : ''), 8000); }
   } finally {
     conv = null; $('#convPill').hidden = true; $('#blackout').hidden = true; wantAwake();
     if ($('#dlgFiles').open) renderFiles();
   }
 }
-$('#fQuick').onclick = () => { $('#dlgFiles').close(); startQuick(); };
+async function discardQuick() {
+  if (!project) return;
+  const pid = project.id;
+  if (conv && conv.pid === pid) conv.ac.abort();
+  await store.deletePieces(pid);
+  await editProj(pid, (p) => { delete p.quickJob; });
+  renderFiles();
+}
+// a new or removed video makes any preparation, sample timing or "prepared" mark stale
+async function resetQuick(pid) {
+  if (conv && conv.pid === pid) conv.ac.abort();
+  if (measuring && measuring.pid === pid) measuring.ac.abort();
+  await store.deletePieces(pid).catch(() => {});
+  await editProj(pid, (p) => { delete p.quickJob; delete p.quickEst; delete p.videoQuick; });
+}
+$('#fQuickStd').onclick = () => { $('#dlgFiles').close(); startQuick('std'); };
+$('#fQuickSharp').onclick = () => { $('#dlgFiles').close(); startQuick('sharp'); };
+$('#fQuickResume').onclick = () => { $('#dlgFiles').close(); startQuick(); };
+$('#fQuickDiscard').onclick = () => confirmDo('Discard the saved pieces?', 'The pieces made so far are deleted. The video stays as it is.', 'Discard', discardQuick);
 $('#convStop').onclick = () => { if (conv) conv.ac.abort(); };
 $('#convBlack').onclick = () => { $('#blackLbl').textContent = $('#convLbl').textContent; $('#blackout').hidden = false; };
 $('#blackout').onclick = () => { $('#blackout').hidden = true; };
+function renderQuick() {
+  const p = project;
+  const show = !!(p && p.videoName && canConvert());
+  $('#qBox').hidden = !show;
+  if (!show) return;
+  const job = p.quickJob, running = conv && conv.pid === p.id, other = conv && conv.pid !== p.id;
+  const sStd = estFor(p, 'std'), sSharp = estFor(p, 'sharp');
+  const lbl = (name, res, s) => `${name} (${res})` + (s ? ` · ${fmtLeft(s.secs)} · ${s.mb >= 1024 ? (s.mb / 1024).toFixed(1) + ' GB' : Math.round(s.mb) + ' MB'}` : measuring ? ' · timing…' : '');
+  $('#fQuickStd').textContent = lbl('Standard', '720p', sStd);
+  $('#fQuickSharp').textContent = lbl('Sharp', 'full size, up to 1080p', sSharp);
+  const prepared = !!p.videoQuick && !job;
+  $('#fQuickStd').hidden = $('#fQuickSharp').hidden = prepared || !!job || !!conv;
+  $('#fQuickResume').hidden = !job || !!conv;
+  $('#fQuickDiscard').hidden = !job || other;
+  let note = '';
+  if (running) note = 'Preparing now; see the bar at the bottom.';
+  else if (other) note = 'Another project’s video is being prepared; one at a time.';
+  else if (job) {
+    const n = job.bounds.length - 1, rate = jobRate(p, job), dur = job.bounds[n];
+    const left = rate ? rate * (dur - job.vdone) + dur * JOIN : NaN;
+    note = `${job.mode === 'sharp' ? 'Sharp' : 'Standard'}: ${job.done} of ${n} pieces saved` + (isFinite(left) ? `, ${fmtLeft(left)} left` : '') + '.';
+    $('#fQuickResume').textContent = `Resume (${job.done} of ${n})`;
+  } else if (prepared) note = `This video is prepared for quick jumps${p.videoQuick === 'sharp' ? ' (sharp)' : ''}. For a sharper copy, add the original again with Replace video…, then choose Sharp.`;
+  else if (measuring) note = 'Timing a short sample on this device for the estimates…';
+  $('#fQuickNote').textContent = note;
+  $('#fQuickNote').hidden = !note;
+  if (!job && !prepared && !p.quickEst && !conv) measureQuick();
+}
 
 function renderFiles() {
   const has = !!project;
-  $('#fQuick').hidden = !(project && project.videoName && !project.videoQuick) || !!conv || typeof VideoEncoder === 'undefined';
-  $('#fQuickNote').hidden = $('#fQuick').hidden;
+  renderQuick();
   $('#fOpenVideo').disabled = !has;
   $('#fOpenVideo').textContent = project && project.videoName ? 'Replace video…' : 'Add video…';
   $('#fRemoveVideo').hidden = !(project && project.videoName);
@@ -2099,7 +2222,7 @@ $('#btnFiles').onclick = () => { pauseMic('dialog'); renderFiles(); $('#dlgFiles
 $('#fOpenScript').onclick = () => $('#fileScript').click();
 $('#fOpenVideo').onclick = () => $('#fileVideo').click();
 $('#fRemoveVideo').onclick = () => confirmDo('Remove the video?', 'The video is removed from this script on this device. Your file elsewhere isn’t touched.', 'Remove', async () => {
-  await store.deleteVideo(project.id); project.videoName = null; clearVideo(); saveProject(); renderFiles();
+  await resetQuick(project.id); await store.deleteVideo(project.id); project.videoName = null; clearVideo(); saveProject(); renderFiles();
 });
 $('#fileScript').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { for (const d of ['#dlgFiles', '#dlgProjects']) if ($(d).open) $(d).close(); openScriptFile(f); } };
 $('#fileVideo').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) openVideoFile(f); };

@@ -224,6 +224,9 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
 .proj-item .acts { display: flex; gap: 8px; flex-wrap: wrap; }
 .proj-item input { width: 100%; border: 1px solid var(--accent); background: var(--surface-2); border-radius: 8px; padding: 7px 10px; }
 
+.conv-pill { position: fixed; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 30; display: flex; gap: 8px; align-items: center; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 6px 6px 6px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.35); zoom: var(--zu, 1); font-size: calc(14px * var(--ut, 1)); }
+.blackout { position: fixed; inset: 0; z-index: 100; background: #000; color: #444; display: grid; place-content: center; gap: 6px; text-align: center; font: 15px var(--font-num); }
+
 /* Dialogs */
 dialog { border: 1px solid var(--rule); border-radius: 14px; background: var(--surface); color: var(--fg); padding: 0; width: min(680px, calc((100vw - 32px) / var(--zu, 1))); max-height: calc((100dvh - 48px) / var(--zu, 1)); }
 dialog::backdrop { background: rgba(0,0,0,.55); }
@@ -340,7 +343,9 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
         <button class="btn" id="fProjects">All projects…</button>
         <button class="btn" id="fOpenVideo">Add video…</button>
         <button class="btn danger" id="fRemoveVideo" hidden>Remove video</button>
+        <button class="btn" id="fQuick" hidden>Prepare video for quick jumps</button>
       </div>
+      <p class="note" id="fQuickNote" hidden>Makes a copy with a full picture every second, so jumps in the video are quick. Runs on this device while you keep working (keep the app open and the screen on; plugged in is best); the current video is used until the copy is ready. Black screen saves power while it runs.</p>
       <p class="note" id="fVideoNote">No video. Add the video the script's timestamps refer to.</p>
       <div class="btns">
         <button class="btn" id="fExportDocx">Export edited script (.docx)</button>
@@ -467,6 +472,8 @@ legend { padding: 0 6px; color: var(--muted); font-size: .8125em; letter-spacing
 </dialog>
 
 <div class="notices" id="notices" aria-live="polite"></div>
+<div class="conv-pill" id="convPill" hidden><span id="convLbl">Preparing video…</span><button class="btn" id="convBlack">Black screen</button><button class="btn danger" id="convStop">Stop</button></div>
+<div class="blackout" id="blackout" hidden><div id="blackLbl"></div><small>Tap to return</small></div>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

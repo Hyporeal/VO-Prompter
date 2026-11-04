@@ -34,6 +34,7 @@ for f in sorted(os.listdir(os.path.join(dev, 'js'))):
     if f == 'engines.js': t = edit(t, [("'models/vosk", "'../models/vosk", 1), ("'vendor/vosk.js'", "'../vendor/vosk.js'", 1)], f)
     elif f == 'piper.js': t = edit(t, [("'vendor/", "'../vendor/", 4)], f)
     elif f == 'parse.js': t = edit(t, [("'vendor/pdfjs/", "'../vendor/pdfjs/", 2)], f)
+    elif f == 'convert.js': t = edit(t, [("'vendor/mediabunny/", "'../vendor/mediabunny/", 1)], f)
     elif f == 'app.js': t = re.sub(r"const VERSION = '[^']*';", f"const VERSION = '{version} beta';", t)
     if re.search(r"'(vendor|models|fonts)/", t): raise SystemExit(f'{f}: a path to shared files was not rewritten')
     out['js/' + f] = t

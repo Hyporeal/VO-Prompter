@@ -5,6 +5,7 @@
 // The pieces hold only the picture; joining them copies the original sound back in, untouched.
 let mbP = null;
 const lib = () => (mbP = mbP || import(new URL('vendor/mediabunny/mediabunny.min.mjs', location.href).href));
+export const PATH = 2; // how pieces are made; pieces or timings from another version aren't mixed in
 export const canConvert = () => typeof VideoEncoder !== 'undefined';
 
 const PIECE_S = 120; // seconds per piece
@@ -91,10 +92,16 @@ export async function encodePiece(file, start, end, mode, { onProgress, signal }
   const m = MODES[mode] || MODES.std;
   const { target, blob } = memTarget(mb);
   const output = new mb.Output({ format: new mb.Mp4OutputFormat(), target });
+  const width = Math.min(track.displayWidth || m.width, m.width);
   const conv = await mb.Conversion.init({
     input, output, tracks: 'primary', trim: { start, end },
     audio: { discard: true },
-    video: { keyFrameInterval: 1, forceTranscode: true, codec: 'avc', width: Math.min(track.displayWidth || m.width, m.width), quality: mb[m.q] },
+    // Every picture is redrawn into one fixed size before it reaches the encoder, the way Standard's resize does:
+    // recordings can change size partway (Zoom does when screen sharing starts or stops), and some phone encoders
+    // stall without an error when handed a picture of another size. A full-frame crop forces the redraw when the
+    // size isn't being reduced; "contain" fits an odd-sized picture into the box without stretching it.
+    video: { keyFrameInterval: 1, forceTranscode: true, codec: 'avc', quality: mb[m.q], fit: 'contain', width,
+      ...(width >= (track.displayWidth || 0) ? { crop: { left: 0, top: 0, width: track.displayWidth, height: track.displayHeight } } : {}) },
   });
   if (!conv.isValid) throw new Error('this video can’t be converted here (' + conv.discardedTracks.map((d) => d.reason).join(', ') + ')');
   if (onProgress) conv.onProgress = onProgress;

@@ -43,6 +43,8 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+/* taps act at once: no wait to see whether it's a double-tap zoom (pinch zoom still works) */
+html { touch-action: manipulation; }
 body {
   background: var(--bg); color: var(--fg); font: 16px/1.4 var(--font-ui);
   padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
@@ -130,8 +132,9 @@ a.btn { color: var(--fg); text-decoration: none; display: inline-block; }
   transition: color .35s ease, background-color .6s ease, box-shadow .3s ease, text-decoration-color .8s ease; }
 .g { border-radius: 0; --guide: var(--accent); transition: color .35s ease, background-color .6s ease, box-shadow .3s ease; }
 /* calm: things that change while you read fade instead of flashing */
-.said-hl .w.said, .said-hl .g.said { transition: background-color 1.4s ease; }
-.said-dim .w.said, .said-sent .w.done, .said-dim .g.said, .said-sent .g.done { transition: color 1.6s ease; }
+/* (short enough to keep up with a fast read: a long fade looks like the marks are behind your voice) */
+.said-hl .w.said, .said-hl .g.said { transition: background-color .4s ease-out; }
+.said-dim .w.said, .said-sent .w.done, .said-dim .g.said, .said-sent .g.done { transition: color .5s ease-out; }
 @media (prefers-reduced-motion: reduce) { .w, .g { transition: none !important; } }
 /* what's been read */
 .said-hl .w.said, .said-hl .g.said { background-color: var(--said-bg); }

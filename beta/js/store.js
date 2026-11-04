@@ -53,6 +53,7 @@ export const putProject = (p) => tx('projects', 'readwrite', (s) => { s.put(p); 
 export async function deleteProject(id) {
   await tx('projects', 'readwrite', (s) => { s.delete(id); });
   await tx('videos', 'readwrite', (s) => { s.delete(id); });
+  await deletePieces(id);
   for (const v of await listVo(id)) await deleteVo(v.id);
 }
 // Voice-over recordings: { id, projectId, name, added, duration, blob, map: [unit, start, end, ...] }
@@ -65,6 +66,10 @@ export const deleteVo = (id) => tx('vo', 'readwrite', (s) => { s.delete(id); });
 export const putVideo = (id, file) => tx('videos', 'readwrite', (s) => { s.put({ id, name: file.name, type: file.type, blob: file }); });
 export const getVideo = (id) => tx('videos', 'readonly', (s) => req(s.get(id)));
 export const deleteVideo = (id) => tx('videos', 'readwrite', (s) => { s.delete(id); });
+// pieces of a video being prepared for quick jumps, kept next to the project's video as "<project id>#q<n>"
+export const putPiece = (pid, n, blob) => tx('videos', 'readwrite', (s) => { s.put({ id: `${pid}#q${n}`, piece: true, blob }); });
+export const getPiece = async (pid, n) => { const r = await tx('videos', 'readonly', (s) => req(s.get(`${pid}#q${n}`))); return r && r.blob; };
+export const deletePieces = (pid) => tx('videos', 'readwrite', (s) => { s.delete(IDBKeyRange.bound(`${pid}#`, `${pid}#\uffff`)); });
 
 export async function wipeAll() {
   try { const d = await dbp; if (d) d.close(); } catch (e) { /* ignore */ }
